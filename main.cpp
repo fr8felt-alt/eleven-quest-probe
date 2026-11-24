@@ -9,7 +9,8 @@
 #include "scotland2/shared/modloader.h"
 
 static constexpr const char* TAG = "ElevenTargets";
-static modloader::ModInfo info{"eleven-quest-targets", "0.2.0", 0};
+static CModInfo info{"eleven-quest-targets", "0.2.0", 0};
+#define MOD_EXTERN_FUNC extern "C" __attribute__((visibility("default")))
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
@@ -216,7 +217,7 @@ static void createTargets() {
 } // namespace
 
 MOD_EXTERN_FUNC void setup(CModInfo* output) noexcept {
-  *output=info.to_c();
+  *output=info;
   LOGI("setup: modulo visual v0.2.0 reconhecido");
 }
 MOD_EXTERN_FUNC void late_load() noexcept {
