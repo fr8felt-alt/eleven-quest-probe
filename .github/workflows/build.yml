@@ -32,14 +32,14 @@ jobs:
           python3 - <<'PY'
           import zipfile
           from pathlib import Path
-          so=Path('build/libeleven_quest_probe.so')
+          so=Path('build/libeleven_quest_targets.so')
           assert so.is_file(), 'Biblioteca nao foi gerada'
-          with zipfile.ZipFile('ElevenQuestProbe.qmod', 'w', compression=zipfile.ZIP_DEFLATED, allowZip64=False) as z:
+          with zipfile.ZipFile('ElevenQuestTargets.qmod', 'w', compression=zipfile.ZIP_DEFLATED, allowZip64=False) as z:
               z.write('mod.json', arcname='mod.json')
               z.write(so, arcname=so.name)
-          print(f'QMOD criado: {Path("ElevenQuestProbe.qmod").stat().st_size} bytes')
+          print(f'QMOD criado: {Path("ElevenQuestTargets.qmod").stat().st_size} bytes')
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: ElevenQuestProbe-qmod
-          path: ElevenQuestProbe.qmod
+          name: ElevenQuestTargets-qmod
+          path: ElevenQuestTargets.qmod
