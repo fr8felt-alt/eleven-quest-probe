@@ -10,8 +10,8 @@
   "description": "Teste de carregamento ARM64, sem alterar o jogo ou criar objetos.",
   "dependencies": [],
   "modFiles": [],
-  "lateModFiles": ["libeleven_quest_probe.so"],
-  "libraryFiles": [],
+  "lateModFiles": [],
+"libraryFiles": ["libeleven_quest_probe.so"],
   "fileCopies": [],
   "copyExtensions": []
 }
