@@ -1,0 +1,22 @@
+ELEVEN QUEST PROBE v0.1.0 — TESTE EXPERIMENTAL
+
+Objetivo: comprovar que uma biblioteca C++ arm64 é carregada pelo Scotland2 no Eleven Table Tennis Quest 3.
+Este teste NÃO adiciona alvos, não altera o lancador e não grava CSV.
+
+COMO COMPILAR SEM ANDROID STUDIO
+1. Crie no GitHub um NOVO repositorio, por exemplo eleven-quest-probe.
+2. Envie os arquivos deste ZIP, mantendo a pasta .github/workflows/build.yml e src/main.cpp.
+   Dica: para manter a pasta .github, use "Add file > Create new file" e digite .github/workflows/build.yml,
+   depois cole o conteudo desse arquivo; ou use git local para subir o ZIP extraido.
+3. Abra a aba Actions > Build Eleven Quest Probe. Execute Run workflow se necessario.
+4. Se a compilacao ficar verde, baixe o artifact ElevenQuestProbe-qmod e extraia ElevenQuestProbe.qmod.
+5. No QuestPatcher > Mod Management > Browse, selecione ElevenQuestProbe.qmod.
+6. Abra o Eleven diretamente no Quest 3. Se travar, desinstale este mod pelo QuestPatcher.
+7. No PC (pasta platform-tools):
+      .\adb.exe -d logcat -d -s ElevenQuestProbe:I
+   Procure linhas 'setup()' e 'late_load()'.
+
+ATENCAO
+A integracao C++ e o manifesto foram preparados a partir da documentacao publica do Scotland2, mas este projeto
+nao foi compilado ou testado no seu Quest nesta conversa. Se GitHub Actions falhar, envie o log da compilacao.
+Nao reinstale nem repatch o Eleven: o Scotland2 ja esta funcionando em VR.
