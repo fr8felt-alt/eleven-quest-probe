@@ -1,6 +1,6 @@
-// Eleven Table Tennis / Quest 3 - three visual training targets (experimental)
+// Eleven Table Tennis / Quest 3 - v0.3.1: 3 targets + 15s countdown + 30 launches
 // Native Scotland2 mod: runs at late_load, when Unity IL2CPP has initialized.
-// Does not interact with ball launcher, scoring, tracking, or physics.
+// Limits the built-in launcher to 30 attempts, after a 15-second start countdown.
 // IL2CPP runtime_invoke: value-type params point to value storage (e.g. &Vec3),
  // reference-type params point directly to Il2CppObject (not &objPtr).
 #include <android/log.h>
@@ -10,10 +10,13 @@
 #include <cmath>
 #include <vector>
 #include <string>
+#include <chrono>
+#include <algorithm>
+#include "dobby.h"
 #include "scotland2/shared/modloader.h"
 
 static constexpr const char* TAG = "ElevenTargets";
-static CModInfo info{"eleven-quest-targets", "0.2.6", 0};
+static CModInfo info{"eleven-quest-targets", "0.3.1", 0};
 #define MOD_EXTERN_FUNC extern "C" __attribute__((visibility("default")))
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -488,13 +491,318 @@ static void createTargets() {
   }
   LOGI("Alvos criados: %d/3; verificacao visual ainda necessaria",created);
 }
+
+// ============================================================================
+// v0.3: built-in launcher 15-second countdown and 30-shot limit.
+// The *existing* ball launcher is responsible for ball speed, trajectory and
+// timing. We never manufacture ball physics or alter the established targets.
+// Hook functions must run on the Unity thread: no background Unity API calls.
+// ============================================================================
+static constexpr int kCountdownSeconds = 15;
+static constexpr int kSeriesLaunches = 30;
+enum class DrillState : uint8_t { Idle, Countdown, Running, Finished };
+using LauncherFn = void (*)(void* self, const void* methodInfo);
+using SteadyClock = std::chrono::steady_clock;
+
+struct Segment {
+  void* gameObject{};
+};
+struct Drill {
+  Api api{};
+  DrillState state{DrillState::Idle};
+  void* activeLauncher{};
+  SteadyClock::time_point startTime{};
+  int launches{0};
+  int shown{-2};
+  int printedSecond{-2};
+  Segment segments[2][7]{};
+  void* setActive{};
+  bool displayReady{false};
+} ;
+static Drill drill;
+static LauncherFn originalUpdate = nullptr;
+static LauncherFn originalLaunchBall = nullptr;
+static LauncherFn originalOnDisable = nullptr;
+static LauncherFn originalOnEnable = nullptr;
+
+// Segments: top, top-left, top-right, middle, bottom-left, bottom-right, bottom.
+// These are ordinary non-colliding Unity cubes: the geometry reliably worked
+// on Quest for the targets, avoiding extra TMPro/Canvas dependencies.
+static constexpr bool sevenSegment[10][7] = {
+ {1,1,1,0,1,1,1}, // 0
+ {0,0,1,0,0,1,0}, // 1
+ {1,0,1,1,1,0,1}, // 2
+ {1,0,1,1,0,1,1}, // 3
+ {0,1,1,1,0,1,0}, // 4
+ {1,1,0,1,0,1,1}, // 5
+ {1,1,0,1,1,1,1}, // 6
+ {1,0,1,0,0,1,0}, // 7
+ {1,1,1,1,1,1,1}, // 8
+ {1,1,1,1,0,1,1}  // 9
+};
+
+static void displayValue(int value) {
+  if (!drill.displayReady || !drill.setActive || drill.shown == value) return;
+  drill.shown=value;
+  for(int digit=0;digit<2;++digit){
+    int d = (digit==0 ? value/10 : value%10);
+    if(value<0) d=-1;
+    // Show a single digit during 0..9 countdown; two digits for 10..30.
+    if(digit==0 && value>=0 && value<10) d=-1;
+    for(int seg=0;seg<7;++seg){
+      void* go=drill.segments[digit][seg].gameObject;
+      if (!go) continue;
+      bool enabled = d>=0 && d<=9 && sevenSegment[d][seg];
+      write1(drill.api,drill.setActive,go,&enabled);
+    }
+  }
+}
+
+static void createCountdownDisplay() {
+  auto& a = drill.api;
+  if(!a.init()){ LOGE("Treino v0.3: IL2CPP indisponivel para visor"); return; }
+  auto goClass=a.klass("UnityEngine.CoreModule.dll","UnityEngine","GameObject");
+  auto trClass=a.klass("UnityEngine.CoreModule.dll","UnityEngine","Transform");
+  auto objClass=a.klass("UnityEngine.CoreModule.dll","UnityEngine","Object");
+  auto componentClass=a.klass("UnityEngine.CoreModule.dll","UnityEngine","Component");
+  auto rendererClass=a.klass("UnityEngine.CoreModule.dll","UnityEngine","Renderer");
+  auto materialClass=a.klass("UnityEngine.CoreModule.dll","UnityEngine","Material");
+  auto colliderClass=a.klass("UnityEngine.PhysicsModule.dll","UnityEngine","Collider");
+  if(!goClass||!trClass||!objClass||!componentClass||!rendererClass||!materialClass||!colliderClass){
+    LOGE("Treino v0.3: classes de visor nao encontradas");return;
+  }
+  auto primitive=a.method(goClass,"CreatePrimitive",1);
+  auto getTransform=a.method(goClass,"get_transform",0);
+  auto setPosition=a.method(trClass,"set_position",1);
+  auto setRotation=a.method(trClass,"set_rotation",1);
+  auto setScale=a.method(trClass,"set_localScale",1);
+  auto setParent=a.method(trClass,"SetParent",2);
+  auto getPosition=a.method(trClass,"get_position",0);
+  auto getRotation=a.method(trClass,"get_rotation",0);
+  auto getComponent=a.method(goClass,"GetComponent",1);
+  auto setEnabled=a.method(colliderClass,"set_enabled",1);
+  auto getMaterial=a.method(rendererClass,"get_material",0);
+  auto setColor=a.method(materialClass,"set_color",1);
+  auto destroy=a.method(objClass,"Destroy",1);
+  drill.setActive=a.method(goClass,"SetActive",1);
+  if(!primitive||!getTransform||!setPosition||!setRotation||!setScale||!getComponent||!setEnabled||!getMaterial||!setColor||!drill.setActive){
+    LOGE("Treino v0.3: metodos do visor faltando; treino sem numeros visuais");return;
+  }
+  auto surface=getTableSurface(a,goClass,objClass,trClass,componentClass);
+  if(!surface.transform){ LOGE("Treino v0.3: mesa nao encontrada para visor"); return; }
+  Quaternion q{0,0,0,1}; Vec3 anchor{};
+  auto bq=a.call(getRotation,surface.transform);
+  auto bp=a.call(getPosition,surface.transform);
+  if(bq) std::memcpy(&q,a.unbox(bq),sizeof(q));
+  if(bp) std::memcpy(&anchor,a.unbox(bp),sizeof(anchor));
+  auto geom=findTableGeometry(a,surface.tableGameObject,goClass,rendererClass);
+  if(geom.found){
+    anchor.y=geom.topY;
+    if(geom.fullCenter){anchor.x=geom.center.x; anchor.z=geom.center.z;}
+  }
+  // Two 7-segment digits face the player from above the net, floating 40cm.
+  // Positions are physical meters relative to the same working table anchor.
+  struct SegmentGeom { float x,y; bool horizontal; };
+  static constexpr SegmentGeom shapes[7] = {
+     {0.00f, 0.12f, true}, {-0.065f, 0.063f, false},
+     {0.065f, 0.063f, false}, {0.00f, 0.0f, true},
+     {-0.065f, -0.063f, false}, {0.065f, -0.063f, false},
+     {0.00f, -0.12f, true}
+  };
+  void* colliderType=a.type_get_object(a.class_get_type(colliderClass));
+  void* rendererType=a.type_get_object(a.class_get_type(rendererClass));
+  int count=0;
+  for(int digit=0;digit<2;++digit){
+    for(int seg=0;seg<7;++seg){
+      int cube=3; // UnityEngine.PrimitiveType.Cube
+      void* obj=call1(a,primitive,nullptr,&cube);
+      if(!obj){LOGE("Treino v0.3: falha ao criar segmento %d/%d",digit,seg); continue;}
+      // Hide immediately, so incomplete objects never appear on the table.
+      bool enabled=false;
+      if(!write1(a,drill.setActive,obj,&enabled)){
+        if(destroy) call1(a,destroy,nullptr,obj);
+        continue;
+      }
+      // In particular, never leave a newly-created cube with a live collider.
+      void* collider=call1(a,getComponent,obj,colliderType);
+      if(!collider || !write1(a,setEnabled,collider,&enabled)){
+        LOGE("Treino v0.3: collider do visor nao desativado; descartando segmento");
+        if(destroy) call1(a,destroy,nullptr,obj);
+        continue;
+      }
+      void* tr=a.call(getTransform,obj);
+      if(!tr){if(destroy)call1(a,destroy,nullptr,obj);continue;}
+      const auto& shape=shapes[seg];
+      Vec3 offset{(digit?0.10f:-0.10f)+shape.x,0.42f+shape.y,0.15f};
+      Vec3 rot=rotateByQuaternion(q,offset);
+      Vec3 pos{anchor.x+rot.x,anchor.y+rot.y,anchor.z+rot.z};
+      Vec3 scale=shape.horizontal ? Vec3{0.12f,0.022f,0.012f}
+                                  : Vec3{0.022f,0.108f,0.012f};
+      bool positioned=write1(a,setPosition,tr,&pos) &&
+                      write1(a,setScale,tr,&scale) &&
+                      (!setRotation || write1(a,setRotation,tr,&q));
+      auto r=rendererType ? call1(a,getComponent,obj,rendererType) : nullptr;
+      auto mat=r ? a.call(getMaterial,r) : nullptr;
+      Color yellow{1.f,0.91f,0.09f,1.f};
+      if(!positioned || !mat || !write1(a,setColor,mat,&yellow)){
+        LOGE("Treino v0.3: segmento sem posicao/cor valida; descartando");
+        if(destroy) call1(a,destroy,nullptr,obj);
+        continue;
+      }
+      if(surface.tableTransform&&setParent){
+        bool keepWorld=true;void* args[]={surface.tableTransform,&keepWorld};
+        a.call(setParent,tr,args);
+      }
+      // Already hidden; visible only during an active launcher drill.
+      drill.segments[digit][seg].gameObject=obj;
+      ++count;
+    }
+  }
+  drill.displayReady=(count==14);
+  LOGI("Treino v0.3: visor 7 segmentos criado: %d/14; %s",
+       count,drill.displayReady?"pronto":"parcial");
+}
+
+static int countdownRemaining() {
+  using seconds=std::chrono::duration<double>;
+  const auto elapsed=std::chrono::duration_cast<seconds>(SteadyClock::now()-drill.startTime).count();
+  return std::clamp(static_cast<int>(std::ceil(kCountdownSeconds-elapsed)),0,kCountdownSeconds);
+}
+static void hookedUpdate(void* self,const void* mi) {
+  if(originalUpdate) originalUpdate(self,mi);
+  if(self!=drill.activeLauncher || drill.state==DrillState::Idle) return;
+  if(drill.state==DrillState::Countdown){
+    int left=countdownRemaining();
+    displayValue(left);
+    if(left!=drill.printedSecond){
+      LOGI("Treino v0.3: inicio em %d s",left); drill.printedSecond=left;
+    }
+    if(left==0){
+      drill.state=DrillState::Running;
+      LOGI("Treino v0.3: contagem encerrada; lancamentos liberados");
+      displayValue(kSeriesLaunches);
+    }
+  }
+}
+static void hookedLaunch(void* self,const void* mi) {
+  if(!originalLaunchBall){return;}
+  if(drill.state==DrillState::Idle || drill.activeLauncher!=self){
+    drill.activeLauncher=self;
+    drill.launches=0;
+    drill.state=DrillState::Countdown;
+    drill.startTime=SteadyClock::now();
+    drill.printedSecond=-2;
+    displayValue(kCountdownSeconds);
+    LOGI("Treino v0.3: primeira tentativa de lancamento: contagem de 15 s iniciada");
+    return; // Block first ball while counting down.
+  }
+  if(drill.state==DrillState::Countdown){
+    if(countdownRemaining()>0) return;
+    drill.state=DrillState::Running;
+    LOGI("Treino v0.3: contagem concluida (chamada LaunchBall)");
+  }
+  if(drill.state==DrillState::Finished || drill.launches>=kSeriesLaunches) return;
+  originalLaunchBall(self,mi); // Existing launcher retains its interval and ball settings.
+  ++drill.launches;
+  LOGI("Treino v0.3: LaunchBall %d/30",drill.launches);
+  displayValue(kSeriesLaunches-drill.launches);
+  if(drill.launches>=kSeriesLaunches){
+    drill.state=DrillState::Finished;
+    LOGI("Treino v0.3: 30/30; novos lancamentos bloqueados ate desligar o lancador");
+  }
+}
+static void resetSeries(void* self,const char* reason){
+  if(self!=drill.activeLauncher) return;
+  drill.activeLauncher=nullptr;
+  drill.state=DrillState::Idle;
+  drill.launches=0;
+  drill.printedSecond=-2;
+  displayValue(-1);
+  LOGI("Treino v0.3: %s; pronto para nova serie",reason);
+}
+static void hookedOnDisable(void* self,const void* mi) {
+  if(originalOnDisable) originalOnDisable(self,mi);
+  resetSeries(self,"OnDisable");
+}
+static void hookedOnEnable(void* self,const void* mi) {
+  if(originalOnEnable) originalOnEnable(self,mi);
+  // Fallback when the component is reactivated without a preceding OnDisable.
+  resetSeries(self,"OnEnable");
+}
+static void* methodPointer(Api& api,void* klass,const char* name,bool required=true){
+  void* method=api.method(klass,name,0);
+  if(!method){
+    if(required) LOGE("Treino v0.3: metodo %s nao encontrado",name);
+    else LOGI("Treino v0.3: evento opcional %s indisponivel",name);
+    return nullptr;
+  }
+  // Unity 2022 MethodInfo begins with Il2CppMethodPointer.
+  void* pointer=nullptr;std::memcpy(&pointer,method,sizeof(pointer));
+  Dl_info dli{};
+  if(!pointer || dladdr(pointer,&dli)==0 || !dli.dli_fname ||
+     !std::strstr(dli.dli_fname,"libil2cpp.so")) {
+    LOGE("Treino v0.3: ponteiro de %s nao validado, sem hook",name);
+    return nullptr;
+  }
+  LOGI("Treino v0.3: metodo %s em %p",name,pointer);
+  return pointer;
+}
+static void installTraining() {
+  // Scotland2 late_load runs on the Unity main thread after IL2CPP init.
+  // Fail closed if any required hook is unavailable: never launch balls ourselves.
+  auto& a=drill.api;
+  if(!a.init()){LOGE("Treino v0.3: falha na API IL2CPP");return;}
+  auto launcher=a.klass("Eleven.dll","ELEVEN","BallLauncher");
+  if(!launcher) launcher=a.klass("Assembly-CSharp.dll","ELEVEN","BallLauncher");
+  if(!launcher){LOGE("Treino v0.3: ELEVEN.BallLauncher nao encontrado");return;}
+  auto update=methodPointer(a,launcher,"Update");
+  auto launch=methodPointer(a,launcher,"LaunchBall");
+  auto disable=methodPointer(a,launcher,"OnDisable",false);
+  auto enable=methodPointer(a,launcher,"OnEnable",false);
+  if(!update||!launch){LOGE("Treino v0.3: hooks obrigatorios indisponiveis");return;}
+  // A countdown that is invisible can confuse players. Do not intercept the
+  // real ball launcher unless the complete, non-colliding yellow display exists.
+  createCountdownDisplay();
+  if(!drill.displayReady){
+    LOGE("Treino v0.3: visor incompleto; lancador original NAO sera alterado");
+    return;
+  }
+  // Install Update first to keep countdown refreshed every frame.
+  int statusUpdate=DobbyHook(update,(void*)hookedUpdate,(void**)&originalUpdate);
+  if(statusUpdate!=0 || !originalUpdate){
+    LOGE("Treino v0.3: DobbyHook Update falhou: %d",statusUpdate);return;
+  }
+  int statusLaunch=DobbyHook(launch,(void*)hookedLaunch,(void**)&originalLaunchBall);
+  if(statusLaunch!=0 || !originalLaunchBall){
+    LOGE("Treino v0.3: DobbyHook LaunchBall falhou: %d",statusLaunch);
+    // Undo first hook, since an Update hook without launch limiting is useless.
+    DobbyDestroy(update); originalUpdate=nullptr;return;
+  }
+  bool hasResetHook=false;
+  if(disable){
+    int s=DobbyHook(disable,(void*)hookedOnDisable,(void**)&originalOnDisable);
+    LOGI("Treino v0.3: hook OnDisable=%d",s);
+    hasResetHook=(s==0 && originalOnDisable);
+  }
+  if(enable){
+    int s=DobbyHook(enable,(void*)hookedOnEnable,(void**)&originalOnEnable);
+    LOGI("Treino v0.3: hook OnEnable=%d",s);
+    hasResetHook=hasResetHook || (s==0 && originalOnEnable);
+  }
+  if(!hasResetHook){
+    LOGE("Treino v0.3: sem evento para reiniciar; pode ser necessario reiniciar a partida");
+  }
+  LOGI("Treino v0.3.1: 15 segundos e limite de 30 disparos ATIVOS; intervalo do jogo preservado");
+}
+
 } // namespace
 
 MOD_EXTERN_FUNC void setup(CModInfo* output) noexcept {
   *output=info;
-  LOGI("setup: modulo visual v0.2.6 reconhecido");
+  LOGI("setup: v0.3.1 tres alvos + 15s + 30 bolas");
 }
 MOD_EXTERN_FUNC void late_load() noexcept {
-  LOGI("late_load v0.2.6: SurfaceSpace sem filtro de pai direto; cadeia e GameTable registradas");
+  LOGI("late_load v0.3.1: mantendo alvos v0.2.6; iniciando integracao launcher");
   createTargets();
+  installTraining();
 }
