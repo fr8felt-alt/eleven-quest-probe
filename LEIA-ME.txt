@@ -1,19 +1,17 @@
-Eleven Quest Targets v0.2.4 - ajuste lateral e vertical
+ELEVEN QUEST TARGETS v0.2.5 - referencia real da mesa
 
-Motivo: casting da v0.2.3 mostra os alvos acima da mesa e deslocados para esquerda.
-Esta versao usa a mesma criacao de objetos que ja funciona; ajusta os offsets:
-  kRightShiftMeters = 0.40f (desloca para direita no eixo X local)
-  kTableTopOffsetY  = 0.36f (versao anterior era 0.7586f)
-Os dois valores sao ESTIMATIVAS baseadas no print; podem necessitar calibracao.
+Mudancas justificadas pela comparacao das versoes e pelo mod PC:
+1. Seleciona TableSurfaceSpace_forTargets APENAS se filho direto de GameTable ativo.
+2. Procura Renderer.bounds dos elementos planos e largos de GameTable para obter a altura real do tampo e seu centro horizontal.
+3. Usa posicoes do mod PC (X=-0.46,0,+0.46; Z=+0.86) sem deslocamentos inventados em X ou Y.
+4. Define GameTable como pai com worldPositionStays=true, para acompanhar o reposicionamento da mesa.
+5. Se nao identificar os renderizadores do tampo, recua para a origem do SurfaceSpace usada no PC; registra explicitamente no Logcat.
 
-Adicionalmente, tenta anexar os discos ao objeto pai de
-TableSurfaceSpace_forTargets (normalmente GameTable), com worldPositionStays=true,
-para acompanha-los ao mover a mesa. Nao coloca discos como filhos do
-TableSurfaceSpace porque ele pode estar inativo.
+COMO ATUALIZAR:
+- Substituir main.cpp e mod.json na raiz do repositorio GitHub anterior.
+- Nao e necessario alterar CMakeLists.txt nem .github/workflows/build.yml.
+- Compilar com Actions, remover a v0.2.4 antiga e importar ElevenQuestTargets.qmod novo pelo QuestPatcher.
+- Nao aplicar Repatch App. O Scotland2 ja esta funcionando.
 
-Subir main.cpp e mod.json para a raiz do repositorio GitHub e substituir.
-CMakeLists.txt e workflow build.yml ficam inalterados.
-Compilar no Actions, baixar ElevenQuestTargets.qmod.
-Remover o Targets anterior no QuestPatcher, instalar a v0.2.4,
-conferir Enabled; nao repatchar nem reinstalar o Eleven.
-Se o jogo fechar, desativar o mod; se abrir mas desalinhado, enviar screenshot.
+A validacao real requer abrir o jogo: a compilacao confirma apenas a consistencia do codigo, nao o posicionamento de objetos do Unity.
+Se o alinhamento ainda estiver impreciso, as linhas do Logcat com tag ElevenTargets mostram a ancora, a altura detectada e os candidatos da malha.

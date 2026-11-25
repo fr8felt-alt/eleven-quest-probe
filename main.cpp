@@ -7,11 +7,13 @@
 #include <dlfcn.h>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
+#include <vector>
 #include <string>
 #include "scotland2/shared/modloader.h"
 
 static constexpr const char* TAG = "ElevenTargets";
-static CModInfo info{"eleven-quest-targets", "0.2.4", 0};
+static CModInfo info{"eleven-quest-targets", "0.2.5", 0};
 #define MOD_EXTERN_FUNC extern "C" __attribute__((visibility("default")))
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -117,34 +119,154 @@ static bool write1(Api& api,void* method,void* owner,void* arg) {
   if (ex) { LOGE("Excecao Unity ajustando componente");return false; }
   return true;
 }
-static void* getTableSurface(Api& api,void* goClass,void* objectClass) {
-  // PC investigation: TableSurfaceSpace_forTargets exists but may be disabled.
+// Read Unity Il2CppString safely when comparing known ASCII scene names.
+static bool unityStringEquals(void* str, const char* ascii) {
+  if (!str || !ascii) return false;
+  const auto* length=reinterpret_cast<const int32_t*>(
+      reinterpret_cast<const uint8_t*>(str)+sizeof(Obj));
+  size_t expected=std::strlen(ascii);
+  if (*length < 0 || static_cast<size_t>(*length) != expected) return false;
+  const auto* chars=reinterpret_cast<const uint16_t*>(
+      reinterpret_cast<const uint8_t*>(str)+sizeof(Obj)+4);
+  for(size_t i=0;i<expected;++i)
+    if(chars[i] != static_cast<uint16_t>(static_cast<unsigned char>(ascii[i]))) return false;
+  return true;
+}
+
+struct TableSurface {
+  void* gameObject{};
+  void* transform{};
+  void* tableTransform{};
+  void* tableGameObject{};
+};
+
+static TableSurface getTableSurface(Api& api, void* goClass,void* objectClass,
+                                    void* transformClass,void* componentClass) {
+  TableSurface result{};
   auto resources=api.klass("UnityEngine.CoreModule.dll","UnityEngine","Resources");
   auto getAll=api.method(resources,"FindObjectsOfTypeAll",1);
   auto getName=api.method(objectClass,"get_name",0);
-  if (!getAll||!getName) return nullptr;
-  void* goType=api.type_get_object(api.class_get_type(goClass));
-  LOGI("Procurando o objeto da superficie da mesa (Resources.FindObjectsOfTypeAll)...");
-  auto arr=reinterpret_cast<Array*>(call1(api,getAll,nullptr,goType));
-  LOGI("FindObjectsOfTypeAll retornou: %p", static_cast<void*>(arr));
-  if (!arr || arr->max_length>100000) return nullptr;
-  for (uintptr_t i=0;i<arr->max_length;++i) {
-    void* go=arr->items[i]; if (!go) continue;
-    void* name=api.call(getName,go);
-    if (!name) continue;
-    // Il2CppString: Obj header + int32 length + UTF16 buffer
-    const auto* length=reinterpret_cast<const int32_t*>(reinterpret_cast<const uint8_t*>(name)+sizeof(Obj));
-    static constexpr char kTarget[]="TableSurfaceSpace_forTargets";
-    if (*length != static_cast<int32_t>(sizeof(kTarget)-1)) continue;
-    const auto* s=reinterpret_cast<const uint16_t*>(reinterpret_cast<const uint8_t*>(name)+sizeof(Obj)+4);
-    bool eq=true;
-    for (size_t j=0;j<sizeof(kTarget);++j) {
-      if (j==sizeof(kTarget)-1) break;
-      if (s[j] != static_cast<uint16_t>(kTarget[j])) {eq=false;break;}
-    }
-    if(eq) return go;
+  auto getTransform=api.method(goClass,"get_transform",0);
+  auto getParent=api.method(transformClass,"get_parent",0);
+  auto getGameObject=api.method(componentClass,"get_gameObject",0);
+  auto getActive=api.method(goClass,"get_activeInHierarchy",0);
+  if (!getAll||!getName||!getTransform||!getParent||!getGameObject) {
+    LOGE("Impossivel validar a hierarquia GameTable / TableSurfaceSpace_forTargets");
+    return result;
   }
-  return nullptr;
+  void* goType=api.type_get_object(api.class_get_type(goClass));
+  LOGI("Buscando SurfaceSpace SOMENTE quando filho de GameTable ativo...");
+  auto arr=reinterpret_cast<Array*>(call1(api,getAll,nullptr,goType));
+  if(!arr||arr->max_length>100000) return result;
+  int matches=0;
+  for(uintptr_t i=0;i<arr->max_length;++i){
+    void* candidate=arr->items[i];
+    if(!candidate || !unityStringEquals(api.call(getName,candidate),
+                                         "TableSurfaceSpace_forTargets")) continue;
+    ++matches;
+    void* surfaceTransform=api.call(getTransform,candidate);
+    void* parent=surfaceTransform ? api.call(getParent,surfaceTransform) : nullptr;
+    if(!parent || !unityStringEquals(api.call(getName,parent),"GameTable")) {
+      LOGI("Candidato %d rejeitado: pai nao eh GameTable",matches);
+      continue;
+    }
+    void* parentGo=api.call(getGameObject,parent);
+    if (!parentGo) continue;
+    if (getActive) {
+      void* activeBox=api.call(getActive,parentGo);
+      if (activeBox && !*reinterpret_cast<uint8_t*>(api.unbox(activeBox))){
+        LOGI("Candidato %d rejeitado: GameTable inativo",matches);
+        continue;
+      }
+    }
+    result={candidate,surfaceTransform,parent,parentGo};
+    LOGI("Referencia escolhida: SurfaceSpace filho de GameTable ATIVO, candidatos=%d",matches);
+    return result;
+  }
+  LOGE("Nenhuma SurfaceSpace vinculada a GameTable ativo encontrada (%d candidatos)",matches);
+  return result;
+}
+
+// Renderer.bounds supplies an axis-aligned world-space bounding box. Use the
+// actual tabletop mesh(es) to find its physical top Y and horizontal center.
+// We deliberately exclude tall net/leg meshes and narrow lines. If the game
+// uses a custom renderer without suitable bounds, the original PC reference
+// coordinates are used instead; no arbitrary fixed height is added.
+struct Bounds { Vec3 center; Vec3 extents; };
+struct TableGeometry {
+  bool found=false;
+  bool fullCenter=false;
+  Vec3 center{};
+  float topY=0.f;
+  int parts=0;
+};
+
+static TableGeometry findTableGeometry(Api& api,void* tableGO,void* goClass,
+                                        void* rendererClass) {
+  TableGeometry geom{};
+  if(!tableGO) return geom;
+  auto children=api.method(goClass,"GetComponentsInChildren",2);
+  auto getBounds=api.method(rendererClass,"get_bounds",0);
+  if(!children||!getBounds){
+    LOGI("Sem acesso a Renderer.bounds; usando a referencia do mod PC");
+    return geom;
+  }
+  void* rendererType=api.type_get_object(api.class_get_type(rendererClass));
+  bool includeInactive=false;
+  void* args[]={rendererType,&includeInactive};
+  auto list=reinterpret_cast<Array*>(api.call(children,tableGO,args));
+  if(!list||list->max_length>5000){
+    LOGI("Sem lista de Renderers de GameTable; usando referencia do mod PC");
+    return geom;
+  }
+  struct Part { Vec3 center; float top; float area; };
+  std::vector<Part> flat;
+  for(uintptr_t i=0;i<list->max_length;++i){
+    void* rend=list->items[i]; if(!rend)continue;
+    void* boxed=api.call(getBounds,rend);
+    if(!boxed)continue;
+    Bounds b{};
+    std::memcpy(&b,api.unbox(boxed),sizeof(b));
+    const float sx=2.f*b.extents.x, sy=2.f*b.extents.y, sz=2.f*b.extents.z;
+    const float area=sx*sz;
+    if(!std::isfinite(area)||!std::isfinite(b.center.y)||
+       !std::isfinite(sy)||sx<0.65f||sz<0.65f||
+       sy>0.14f||area<0.85f||area>16.0f) continue;
+    const float top=b.center.y+b.extents.y;
+    flat.push_back({b.center,top,area});
+    LOGI("Tampo candidato: centro=(%.3f,%.3f,%.3f), dim=(%.3f,%.3f,%.3f)",
+         b.center.x,b.center.y,b.center.z,sx,sy,sz);
+  }
+  if(flat.empty()){
+    LOGI("Nenhum Renderer plano compativel: usando origem SurfaceSpace do PC");
+    return geom;
+  }
+  float top=-10000.f;
+  for(const auto& p:flat)if(p.top>top)top=p.top;
+  float sum=0.f;
+  Vec3 center{0,0,0};
+  int parts=0;
+  float biggest=0;
+  for(const auto& p:flat){
+    if(std::fabs(p.top-top)>0.045f)continue;
+    sum+=p.area;
+    center.x+=p.center.x*p.area;
+    center.z+=p.center.z*p.area;
+    ++parts;
+    if(p.area>biggest)biggest=p.area;
+  }
+  if(parts==0||sum<=0) return geom;
+  center.x/=sum;
+  center.z/=sum;
+  center.y=top;
+  geom.found=true;
+  geom.fullCenter=(parts>=2 || biggest>2.8f);
+  geom.center=center;
+  geom.topY=top;
+  geom.parts=parts;
+  LOGI("Top real por Renderer.bounds: Y=%.3f; centro XZ=(%.3f,%.3f); partes=%d; centro valido=%s",
+       top,center.x,center.z,parts,geom.fullCenter?"sim":"nao");
+  return geom;
 }
 
 static void createTargets() {
@@ -170,7 +292,6 @@ static void createTargets() {
   auto getRotation=a.method(transform,"get_rotation",0);
   auto setRotation=a.method(transform,"set_rotation",1);
   auto getPosition=a.method(transform,"get_position",0);
-  auto getParent=a.method(transform,"get_parent",0);
   auto setParent=a.method(transform,"SetParent",2);
   auto getComponent=a.method(gameObject,"GetComponent",1);
   auto getMaterial=a.method(renderer,"get_material",0);
@@ -183,24 +304,34 @@ static void createTargets() {
     LOGE("Componentes de desenho ou seguranca do collider nao disponiveis");return;
   }
   LOGI("Metodos Unity resolvidos. Procurando superficie...");
-  void* surfaceGo=getTableSurface(a,gameObject,object);
-  void* surfaceTransform=surfaceGo ? a.call(getTransform,surfaceGo) : nullptr;
-  LOGI("TableSurfaceSpace_forTargets: %s", surfaceTransform?"encontrado":"nao encontrado; usando posicao aproximada");
-  // Attach under GameTable, not under the potentially inactive TableSurfaceSpace.
-  // That way targets follow subsequent table movements/recentering.
-  void* tableParent=(surfaceTransform && getParent) ? a.call(getParent,surfaceTransform) : nullptr;
-  LOGI("Transform pai de TableSurfaceSpace: %p; SetParent: %s",
-       tableParent, setParent?"disponivel":"indisponivel");
-  Quaternion q{0,0,0,1};
-  Vec3 framePos{0.0f,0.7586f,0.0f};
-  if (surfaceTransform) {
-    auto boxedRotation=a.call(getRotation,surfaceTransform);
-    if (boxedRotation) std::memcpy(&q,a.unbox(boxedRotation),sizeof(q));
-    auto boxedPosition=a.call(getPosition,surfaceTransform);
-    if (boxedPosition) std::memcpy(&framePos,a.unbox(boxedPosition),sizeof(framePos));
+  TableSurface surface=getTableSurface(a,gameObject,object,transform,component);
+  if(!surface.transform || !surface.tableTransform){
+    LOGE("Cancelando: sem GameTable ativo, nao vamos criar alvos no espaco errado");
+    return;
   }
-  LOGI("Mesa frame pos=(%.3f,%.3f,%.3f), rot=(%.3f,%.3f,%.3f,%.3f)",
+  void* surfaceTransform=surface.transform;
+  void* tableParent=surface.tableTransform;
+  Quaternion q{0,0,0,1};
+  Vec3 framePos{0,0,0};
+  auto boxedRotation=a.call(getRotation,surfaceTransform);
+  if(boxedRotation)std::memcpy(&q,a.unbox(boxedRotation),sizeof(q));
+  auto boxedPosition=a.call(getPosition,surfaceTransform);
+  if(boxedPosition)std::memcpy(&framePos,a.unbox(boxedPosition),sizeof(framePos));
+  LOGI("PC SurfaceSpace world pos=(%.3f,%.3f,%.3f), rot=(%.3f,%.3f,%.3f,%.3f)",
        framePos.x,framePos.y,framePos.z,q.x,q.y,q.z,q.w);
+  TableGeometry geometry=findTableGeometry(a,surface.tableGameObject,
+                                            gameObject,renderer);
+  Vec3 anchor=framePos;
+  if(geometry.found){
+    // Renderer.bounds is world space. This is the actual observed tabletop Y.
+    anchor.y=geometry.topY;
+    if(geometry.fullCenter){
+      anchor.x=geometry.center.x;
+      anchor.z=geometry.center.z;
+    }
+  }
+  LOGI("Ancora final dos alvos=(%.3f,%.3f,%.3f), geometria=%s",
+       anchor.x,anchor.y,anchor.z,geometry.found?"tampo real":"SurfaceSpace");
   constexpr float xs[]={-0.46f,0.0f,0.46f};
   constexpr const char* names[]={"Esquerda","Centro","Direita"};
   int created=0;
@@ -225,21 +356,14 @@ static void createTargets() {
     }
     void* diskTransform=a.call(getTransform,disk);
     if(!diskTransform)continue;
-    // 18 cm diameter, very thin; positioned a few mm above the table.
-    // IMPORTANT: coordinates are physical meters, not scaled local coordinates.
-    // Unity's TransformPoint multiplies by table scale (1.5258 x 2.7453
-    // on the PC prototype), putting the targets beyond the table.
-    // Calibration based on casting screenshot: v0.2.3 (+0.7586 m) floats above
-    // tabletop, and the whole row appears left of the opponent-side center.
-    // Both values below are ESTIMATES; calibrate from another screenshot.
-    // Keep them explicit to make later iterations a two-number change.
-    constexpr float kRightShiftMeters = 0.40f;
-    constexpr float kTableTopOffsetY = 0.36f;
-    Vec3 local{xs[i] + kRightShiftMeters,kTableTopOffsetY + 0.008f,0.86f};
+    // The PC mod's physical, unscaled spacing: (-.46,0,+.46) and +.86 on Z.
+    // Anchor Y from actual tabletop Renderers, without arbitrary offsets.
+    // Parent will follow GameTable after its VR recentering.
+    Vec3 local{xs[i],0.008f,0.86f};
     const Vec3 rotated=rotateByQuaternion(q,local);
-    Vec3 world{framePos.x+rotated.x,
-               framePos.y+rotated.y,
-               framePos.z+rotated.z};
+    Vec3 world{anchor.x+rotated.x,
+               anchor.y+rotated.y,
+               anchor.z+rotated.z};
     LOGI("Alvo %d: posicao em metros=(%.3f,%.3f,%.3f)",
          i+1,world.x,world.y,world.z);
     if (!write1(a,setPosition,diskTransform,&world)) {
@@ -286,9 +410,9 @@ static void createTargets() {
 
 MOD_EXTERN_FUNC void setup(CModInfo* output) noexcept {
   *output=info;
-  LOGI("setup: modulo visual v0.2.4 reconhecido");
+  LOGI("setup: modulo visual v0.2.5 reconhecido");
 }
 MOD_EXTERN_FUNC void late_load() noexcept {
-  LOGI("late_load v0.2.4: x +0.40 m, y +0.36 m, segue GameTable");
+  LOGI("late_load v0.2.5: referencia GameTable validada, altura pelo tampo, sem offsets arbitrarios");
   createTargets();
 }

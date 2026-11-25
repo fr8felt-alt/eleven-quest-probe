@@ -4,10 +4,10 @@
   "id": "eleven-quest-targets",
   "modloader": "Scotland2",
   "author": "Eleven Training Project",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "packageId": "quest.eleven.forfunlabs",
   "packageVersion": "0.436.37_2026.9.4.18.35.33.415",
-  "description": "Calibracao experimental: lateral direita +0.40 m; vertical +0.36 m; alvos acompanham movimento do GameTable, quando disponivel.",
+  "description": "Posicionamento fisico dos 3 alvos: GameTable ativo, bounds do tampo quando disponiveis, zero ajustes arbitrarios; alvos acompanham a mesa.",
   "dependencies": [],
   "modFiles": [
     "libeleven_quest_targets.so"
