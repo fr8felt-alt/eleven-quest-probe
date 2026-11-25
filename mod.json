@@ -4,10 +4,10 @@
   "id": "eleven-quest-targets",
   "modloader": "Scotland2",
   "author": "Eleven Training Project",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "packageId": "quest.eleven.forfunlabs",
   "packageVersion": "0.436.37_2026.9.4.18.35.33.415",
-  "description": "Correcao de posicao dos alvos em metros; nao aplicar escala de mesa ao calcular mundo.",
+  "description": "Ajuste experimental de altura +0,7586 m com base na observacao de alvos abaixo da mesa; usa offsets em metros.",
   "dependencies": [],
   "modFiles": [
     "libeleven_quest_targets.so"

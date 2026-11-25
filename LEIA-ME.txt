@@ -1,21 +1,15 @@
-Eleven Quest Targets 0.2.2 — correção experimental de posição
+Eleven Quest Targets v0.2.3 - ajuste experimental de altura
 
-Arquivos para subir no repositório GitHub existente:
-- main.cpp (na raiz do repositório)
-- mod.json  (na raiz do repositório)
+O usuario localizou os tres discos cerca de tres palmos abaixo do tampo da mesa.
+Esta versao conserva a logica de criacao que ja mostrou os tres objetos no Quest,
+e acrescenta 0.7586 metro ao deslocamento vertical dos discos.
 
-Não altere a pasta .github nem o CMakeLists.txt.
+Subir APENAS main.cpp e mod.json na raiz do repositorio existente no GitHub.
+Nao alterar CMakeLists.txt ou .github/workflows/build.yml.
+Aguardar o Actions ficar verde e baixar o ElevenQuestTargets.qmod.
+No QuestPatcher, desativar/remover Targets 0.2.2, instalar 0.2.3,
+abrir o Eleven e observar os alvos. Nao e necessario repatchar.
+Se os discos ficarem altos ou baixos, basta informar a diferenca aproximada.
 
-Problema investigado:
-- v0.2.1 criou 3/3 alvos mas não ficaram visíveis.
-- No PC, os offsets são em metros em um holder com escala 1.
-- A v0.2.1 usava TransformPoint sobre a superfície da mesa,
-  multiplicando os offsets pela escala (mesa 1,5258 x 2,7453 no PC).
-- v0.2.2 calcula mundo = position_da_superficie + rotation * offset_metros.
-- Inclui logs de posição mundial, renderer e material.
-
-Teste:
-- Remova o Targets 0.2.1 do QuestPatcher, depois instale o 0.2.2.
-- O jogo deve abrir e mostrar três discos amarelos na metade adversária.
-- Não é garantido: esta versão não foi executada em um Quest 3.
-- Se houver falha, desative/remova o mod; não repatche o aplicativo.
+CUIDADO: Estimativa de altura com base no referencial de uma versao anterior
+(0.7586m). Ainda nao verificado no Quest 3; confirmar visualmente.

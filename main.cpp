@@ -11,7 +11,7 @@
 #include "scotland2/shared/modloader.h"
 
 static constexpr const char* TAG = "ElevenTargets";
-static CModInfo info{"eleven-quest-targets", "0.2.2", 0};
+static CModInfo info{"eleven-quest-targets", "0.2.3", 0};
 #define MOD_EXTERN_FUNC extern "C" __attribute__((visibility("default")))
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -222,7 +222,11 @@ static void createTargets() {
     // IMPORTANT: coordinates are physical meters, not scaled local coordinates.
     // Unity's TransformPoint multiplies by table scale (1.5258 x 2.7453
     // on the PC prototype), putting the targets beyond the table.
-    Vec3 local{xs[i],0.008f,0.86f};
+    // Visual finding from Quest 3: targets were roughly 3 palms below tabletop.
+    // SurfaceSpace origin appears near the floor while the top is about 0.7586 m up.
+    // Experimental tabletop elevation; calibrate from in-game observations.
+    constexpr float kTableTopOffsetY = 0.7586f;
+    Vec3 local{xs[i],kTableTopOffsetY + 0.008f,0.86f};
     const Vec3 rotated=rotateByQuaternion(q,local);
     Vec3 world{framePos.x+rotated.x,
                framePos.y+rotated.y,
@@ -260,9 +264,9 @@ static void createTargets() {
 
 MOD_EXTERN_FUNC void setup(CModInfo* output) noexcept {
   *output=info;
-  LOGI("setup: modulo visual v0.2.1 reconhecido");
+  LOGI("setup: modulo visual v0.2.3 reconhecido");
 }
 MOD_EXTERN_FUNC void late_load() noexcept {
-  LOGI("late_load v0.2.2: alvos em metros, sem escala da mesa");
+  LOGI("late_load v0.2.3: altura da mesa acrescida de 0.7586m");
   createTargets();
 }
