@@ -1,29 +1,85 @@
-ELEVEN QUEST TARGETS v0.2.6 — correção do filtro GameTable
+ELEVEN QUEST TRAINING - v0.3.1 (revisao da v0.3; experimental)
+=================================================================
 
-MOTIVO CONFIRMADO PELO LOGCAT v0.2.5:
-  Candidato 1 rejeitado: pai nao eh GameTable
-  Cancelando: sem GameTable ativo
-Portanto os alvos na v0.2.5 nem eram criados.
+Este ZIP e o CODIGO-FONTE para GitHub; nao e um arquivo .qmod pronto.
+Objetivo desta etapa: 3 alvos amarelos + contagem regressiva de 15 s +
+ate 30 chamadas ao lancador de bolas NATIVO do Eleven Table Tennis.
+A sequencia esquerda-centro-direita fica para a v0.4.
 
-ALTERACOES:
-1. Usa o objeto TableSurfaceSpace_forTargets identificado nas versões funcionais.
-2. Procura GameTable em até 16 ancestrais (não apenas no pai direto).
-3. Se não encontrar ancestral, procura GameTable ativa próxima no espaço 3D.
-4. Não cancela a criação apenas por falta de GameTable; nesse caso preserva
-   o referencial que gerou três alvos nas versões v0.2.1–v0.2.4.
-5. Registra a cadeia de ancestrais e o resultado dos Renderer.bounds.
-6. Mantém as posições físicas do mod PC (-0.46,0,+0.46 e z=0.86 m).
+MANTIDO DA BASE ANTERIOR
+- Rotina de criacao e posicionamento dos 3 alvos da v0.2.6.
+- Configuracao de velocidade, trajetoria e intervalo da maquina nativa.
+- Visor de 2 digitos amarelos acima da mesa, feito com cubos sem colisao.
+- O mod NAO cria bolas: apenas intercepta chamadas a BallLauncher.LaunchBall.
 
-IMPORTANTE:
-A posição de fallback ainda pode ficar abaixo da mesa: esta versão corrige
-primeiro a regressão que impedia criar objetos e gera informação objetiva para
-calibração. Não promete alinhamento perfeito sem informações da cena.
+REVISAO DA V0.3.1
+- Se faltar algum dos 14 segmentos amarelos, nao ativa o bloqueio das bolas.
+  Isso evita iniciar um treino de 15 s sem indicador visual completo.
+- Ao criar os segmentos, eles ficam ocultos imediatamente, e os cubos
+  defeituosos sao descartados; fisica/colisoes nao devem ser alteradas.
+- Acrescenta tentativa opcional de reinicio por OnEnable, alem de OnDisable.
+- Parametros de tempo/quantidade centralizados no codigo.
+- Inclui testes locais de logica no diretorio tests/.
 
-COMO ATUALIZAR:
-- No GitHub, substituir main.cpp e mod.json na raiz do repositorio.
-- Commit changes; Actions verde; baixar o QMOD compilado.
-- No QuestPatcher, remover a v0.2.5, instalar a v0.2.6 e ativar.
-- Não aplicar outro patch no jogo; manter Scotland2.
-- Se os alvos aparecerem mas ficarem fora da mesa, coletar as linhas com
-  ElevenTargets no Logcat, especialmente cadeia, GameTable, Tampo candidato,
-  Ancora final e Alvo 1/2/3.
+COMPORTAMENTO ESPERADO (SE OS HOOKS FOREM COMPATIVEIS COM O JOGO)
+1. Ligue o lancador nativo do Eleven pelo menu do jogo.
+2. A primeira tentativa de disparo e bloqueada e inicia 15 segundos:
+   o visor indica 15, 14, ... ate o encerramento.
+3. Ao encerrar, mostra 30 e o jogo volta a gerar os disparos no SEU ritmo.
+4. Cada chamada concluida a LaunchBall desconta um; ao chegar a 00,
+   chamadas posteriores sao bloqueadas.
+5. Desligar/ligar o COMPONENTE de lancador deve reiniciar a serie se
+   OnDisable/OnEnable existirem e forem disparados nessa transicao.
+   ATENCAO: o botao liga/desliga no menu pode controlar apenas um estado
+   INTERNO sem emitir esses eventos. Teste no Quest; nao e garantido.
+
+O QUE NAO ESTA COMPROVADO
+- Nao foi compilado para ARM64/Quest neste ambiente e nao foi testado em VR.
+- Ainda nao foi confirmado que ELEVEN.BallLauncher/LaunchBall/Update
+  existem com essas assinaturas na versao instalada do aplicativo.
+- Sao contadas as chamadas feitas a LaunchBall, nao as bolas fisicamente
+  confirmadas na mesa. Uma chamada pode nao produzir uma bola.
+- O mod age sobre o lancador nativo utilizado, nao so no preset Backhand.
+- A contagem inicia no primeiro LaunchBall solicitado, nao no instante em
+  que o usuario toca no botao de ativacao da maquina.
+- No fim dos 15 segundos, o proximo disparo respeita o intervalo do jogo.
+- Se nao houver eventos de reinicio, pode ser preciso reiniciar a partida
+  para uma nova serie. O log informara esse caso.
+- O codigo foi mantido compativel com a estrutura da v0.3 original, mas
+  requer validacao real; hooks Dobby em IL2CPP podem falhar ou travar o jogo.
+
+COMO UTILIZAR NO GITHUB
+1. Guarde o QMOD estavel v0.2.6 para voltar atras, se necessario.
+2. No repositorio GitHub que ja compila corretamente, substitua na RAIZ:
+   main.cpp, CMakeLists.txt e mod.json pelos deste ZIP.
+3. Nao apague nem substitua o workflow .github/workflows/build.yml que ja
+   funciona. O ZIP original NAO continha esse workflow; este tambem nao.
+4. Opcional: copie a pasta tests/ e LEIA-ME.txt para guardar os testes.
+5. Faca commit; execute o workflow Actions existente.
+6. So depois de uma compilacao bem-sucedida, baixe o artifact com o .qmod.
+   O nome exato do artifact depende do workflow existente.
+7. Em QuestPatcher, remova o QMOD do mod v0.2.6 e instale o novo .qmod.
+   Mantenha Scotland2, nao instale as duas versoes ao mesmo tempo.
+8. Se o jogo falhar ao abrir, remova somente esta versao e restaure v0.2.6.
+
+VERIFICACAO NA PRIMEIRA EXECUCAO
+- Os tres alvos devem continuar sobre a mesa e nao alterar o quique.
+- O visor amarelo deve aparecer na PRIMEIRA tentativa de lancamento.
+- Nenhuma bola deve sair antes da contagem terminar.
+- Depois: 30 disparos no ritmo do preset; visor 30,29,...,00.
+- A 31a tentativa deve ser bloqueada; confirme visualmente a quantidade.
+- Desative e reative o robo. Se nao reiniciar, gere logcat e envie os logs.
+- No Logcat, filtro ElevenTargets; erros de IL2CPP/Dobby aparecem ali.
+
+TESTES DE LOGICA EM PC (NAO SUBSTITUEM O TESTE NO QUEST)
+  clang++ -std=c++20 -Wall -Wextra -Werror -I tests/stubs \
+    tests/test_drill.cpp -ldl -o test_drill
+  ./test_drill
+
+DEPENDENCIA DE TERCEIRO
+Dobby (Apache-2.0): https://github.com/jmpews/Dobby
+Baixada pelo CMake na compilacao; o workflow precisa de acesso a rede.
+
+ID DO JOGO SEGUNDO O ZIP ORIGINAL: quest.eleven.forfunlabs
+VERSAO INDICADA NO mod.json: 0.436.37_2026.9.4.18.35.33.415
+Se a versao instalada for outra, confirme compatibilidade antes de instalar.
