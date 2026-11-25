@@ -1,4 +1,4 @@
-// Eleven Table Tennis / Quest 3 - v0.3.4 experimental: camera-attached HUD for Backhand 30 Bolas
+// Eleven Table Tennis / Quest 3 - v0.4.0: camera-attached startup countdown only, Backhand 30 Bolas
 // Native Scotland2 mod: runs at late_load, when Unity IL2CPP has initialized.
 // Only limits launches when the BH30C0 preset is the sole active saved shot.
 // IL2CPP runtime_invoke: value-type params point to value storage (e.g. &Vec3),
@@ -18,7 +18,7 @@
 #include "scotland2/shared/modloader.h"
 
 static constexpr const char* TAG = "ElevenTargets";
-static CModInfo info{"eleven-quest-targets", "0.3.4", 0};
+static CModInfo info{"eleven-quest-targets", "0.4.0", 0};
 #define MOD_EXTERN_FUNC extern "C" __attribute__((visibility("default")))
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -676,7 +676,7 @@ static void displayValue(int value) {
     }
   }
   if(errors==0) drill.shown=value;
-  LOGI("Treino v0.3.4: visor valor=%d segmentos_ligados=%d erros=%d modo=%s hud=%s",
+  LOGI("Treino v0.4.0: visor valor=%d segmentos_ligados=%d erros=%d modo=%s hud=%s",
        value,enabledCount,errors,drill.setRendererEnabled?"Renderer":"SetActive-fallback",
        drill.hudBound?"camera":"mesa");
 }
@@ -891,9 +891,8 @@ static void attachDisplayToCamera() {
   if(!drill.hudBound) LOGE("Treino v0.3.4: HUD parcial, precisa verificar geometria");
   // Reapply number since rendering parent/positions have changed.
   drill.shown=-2;
+  // The HUD is ONLY a startup timer. Never show the remaining ball count.
   if(drill.state==DrillState::Countdown) displayValue(kCountdownSeconds);
-  else if(drill.state==DrillState::Running || drill.state==DrillState::Finished)
-    displayValue(kSeriesLaunches-drill.launches);
   else displayValue(-1);
 }
 
@@ -946,8 +945,8 @@ static void hookedUpdate(void* self,const void* mi) {
     }
     if(left==0){
       drill.state=DrillState::Running;
-      LOGI("Treino v0.3: contagem encerrada; lancamentos liberados");
-      displayValue(kSeriesLaunches);
+      LOGI("Treino v0.4.0: contagem encerrada; visor oculto; lancamentos liberados");
+      displayValue(-1);
     }
   }
 }
@@ -977,13 +976,14 @@ static void hookedLaunch(void* self,const void* mi) {
   if(drill.state==DrillState::Countdown){
     if(countdownRemaining()>0) return;
     drill.state=DrillState::Running;
-    LOGI("Treino v0.3: contagem concluida (chamada LaunchBall)");
+    displayValue(-1); // Hide countdown even if a launch callback beats Update.
+    LOGI("Treino v0.4.0: contagem concluida (chamada LaunchBall); visor oculto");
   }
   if(drill.state==DrillState::Finished || drill.launches>=kSeriesLaunches) return;
   originalLaunchBall(self,mi); // Existing launcher retains its interval and ball settings.
   ++drill.launches;
-  LOGI("Treino v0.3: LaunchBall %d/30",drill.launches);
-  displayValue(kSeriesLaunches-drill.launches);
+  LOGI("Treino v0.4.0: LaunchBall %d/30 (contador apenas interno)",drill.launches);
+  // Do NOT render a ball counter: the display remains hidden during the drill.
   if(drill.launches>=kSeriesLaunches){
     drill.state=DrillState::Finished;
     LOGI("Treino v0.3: 30/30; novos lancamentos bloqueados ate desligar o lancador");
@@ -1072,7 +1072,7 @@ static void installTraining() {
   if(!hasResetHook){
     LOGE("Treino v0.3.2: sem evento de reset, escolha outro preset e volte para reiniciar");
   }
-  LOGI("Treino v0.3.4: hooks prontos, limite de 30 somente no BH30C0; HUD camera VR");
+  LOGI("Treino v0.4.0: hooks prontos; HUD 15s apenas; 30 bolas controladas internamente");
   refreshPreset(true);
 }
 
@@ -1080,10 +1080,10 @@ static void installTraining() {
 
 MOD_EXTERN_FUNC void setup(CModInfo* output) noexcept {
   *output=info;
-  LOGI("setup: v0.3.4 alvos preservados; HUD segue camera VR");
+  LOGI("setup: v0.4.0 alvos preservados; visor apenas 15s; 30 bolas internas");
 }
 MOD_EXTERN_FUNC void late_load() noexcept {
-  LOGI("late_load v0.3.4: alvos v0.2.6 inalterados; HUD VR ligado no Update");
+  LOGI("late_load v0.4.0: alvos v0.2.6 inalterados; HUD 15s somente");
   createTargets();
   installTraining();
 }
