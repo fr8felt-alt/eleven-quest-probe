@@ -11,7 +11,7 @@
 #include "scotland2/shared/modloader.h"
 
 static constexpr const char* TAG = "ElevenTargets";
-static CModInfo info{"eleven-quest-targets", "0.2.1", 0};
+static CModInfo info{"eleven-quest-targets", "0.2.2", 0};
 #define MOD_EXTERN_FUNC extern "C" __attribute__((visibility("default")))
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -20,6 +20,21 @@ namespace {
 struct Vec3 { float x, y, z; };
 struct Color { float r, g, b, a; };
 struct Quaternion { float x, y, z, w; };
+// Rotate a physical displacement, without applying Transform.localScale.
+// This matches the PC mod's unscaled holder: position=table.position,
+// rotation=table.rotation, localScale=Vector3.one.
+static Vec3 rotateByQuaternion(const Quaternion& q, const Vec3& v) {
+  const Vec3 t{
+    2.0f * (q.y * v.z - q.z * v.y),
+    2.0f * (q.z * v.x - q.x * v.z),
+    2.0f * (q.x * v.y - q.y * v.x)
+  };
+  return Vec3{
+    v.x + q.w * t.x + (q.y * t.z - q.z * t.y),
+    v.y + q.w * t.y + (q.z * t.x - q.x * t.z),
+    v.z + q.w * t.z + (q.x * t.y - q.y * t.x)
+  };
+}
 struct Obj { void* klass; void* monitor; };
 struct Array { Obj object; void* bounds; uintptr_t max_length; void* items[1]; };
 using DomainGet=void*(*)();
@@ -154,14 +169,14 @@ static void createTargets() {
   auto setScale=a.method(transform,"set_localScale",1);
   auto getRotation=a.method(transform,"get_rotation",0);
   auto setRotation=a.method(transform,"set_rotation",1);
-  auto transformPoint=a.method(transform,"TransformPoint",1);
+  auto getPosition=a.method(transform,"get_position",0);
   auto getComponent=a.method(gameObject,"GetComponent",1);
   auto getMaterial=a.method(renderer,"get_material",0);
   auto setColor=a.method(material,"set_color",1);
   auto setColliderEnabled=a.method(collider,"set_enabled",1);
   auto destroy=a.method(object,"Destroy",1);
   auto dontDestroy=a.method(object,"DontDestroyOnLoad",1);
-  if(!createPrimitive||!getTransform||!setPosition||!setScale||
+  if(!createPrimitive||!getTransform||!getPosition||!getRotation||!setPosition||!setScale||
      !getComponent||!collider||!setColliderEnabled||!renderer||!getMaterial||!setColor) {
     LOGE("Componentes de desenho ou seguranca do collider nao disponiveis");return;
   }
@@ -170,10 +185,15 @@ static void createTargets() {
   void* surfaceTransform=surfaceGo ? a.call(getTransform,surfaceGo) : nullptr;
   LOGI("TableSurfaceSpace_forTargets: %s", surfaceTransform?"encontrado":"nao encontrado; usando posicao aproximada");
   Quaternion q{0,0,0,1};
-  if(surfaceTransform&&getRotation) {
-    auto boxed=a.call(getRotation,surfaceTransform);
-    if(boxed) std::memcpy(&q,a.unbox(boxed),sizeof(q));
+  Vec3 framePos{0.0f,0.7586f,0.0f};
+  if (surfaceTransform) {
+    auto boxedRotation=a.call(getRotation,surfaceTransform);
+    if (boxedRotation) std::memcpy(&q,a.unbox(boxedRotation),sizeof(q));
+    auto boxedPosition=a.call(getPosition,surfaceTransform);
+    if (boxedPosition) std::memcpy(&framePos,a.unbox(boxedPosition),sizeof(framePos));
   }
+  LOGI("Mesa frame pos=(%.3f,%.3f,%.3f), rot=(%.3f,%.3f,%.3f,%.3f)",
+       framePos.x,framePos.y,framePos.z,q.x,q.y,q.z,q.w);
   constexpr float xs[]={-0.46f,0.0f,0.46f};
   constexpr const char* names[]={"Esquerda","Centro","Direita"};
   int created=0;
@@ -199,28 +219,42 @@ static void createTargets() {
     void* diskTransform=a.call(getTransform,disk);
     if(!diskTransform)continue;
     // 18 cm diameter, very thin; positioned a few mm above the table.
+    // IMPORTANT: coordinates are physical meters, not scaled local coordinates.
+    // Unity's TransformPoint multiplies by table scale (1.5258 x 2.7453
+    // on the PC prototype), putting the targets beyond the table.
     Vec3 local{xs[i],0.008f,0.86f};
-    Vec3 world{xs[i],0.767f,0.86f};
-    if(surfaceTransform && transformPoint) {
-      void* boxed=call1(a,transformPoint,surfaceTransform,&local);
-      if(boxed) std::memcpy(&world,a.unbox(boxed),sizeof(world));
+    const Vec3 rotated=rotateByQuaternion(q,local);
+    Vec3 world{framePos.x+rotated.x,
+               framePos.y+rotated.y,
+               framePos.z+rotated.z};
+    LOGI("Alvo %d: posicao em metros=(%.3f,%.3f,%.3f)",
+         i+1,world.x,world.y,world.z);
+    if (!write1(a,setPosition,diskTransform,&world)) {
+      LOGE("Falha ao posicionar alvo %d",i+1); continue;
     }
-    write1(a,setPosition,diskTransform,&world);
     Vec3 scale{0.18f,0.001f,0.18f};
     write1(a,setScale,diskTransform,&scale);
     if(surfaceTransform&&setRotation) write1(a,setRotation,diskTransform,&q);
     if(getComponent && renderer && getMaterial && setColor){
       void* type=a.type_get_object(a.class_get_type(renderer));
-      auto render=call1(a,getComponent,disk,type);
-      if(render){
+      void* render=call1(a,getComponent,disk,type);
+      if (render) {
         auto mat=a.call(getMaterial,render);
-        if(mat){Color yellow{1.0f,0.83f,0.05f,1.0f};write1(a,setColor,mat,&yellow);}
+        if (mat) {
+          Color yellow{1.0f,0.83f,0.05f,1.0f};
+          if (!write1(a,setColor,mat,&yellow))
+            LOGE("Nao consegui definir cor do alvo %d",i+1);
+        } else {
+          LOGE("Sem material para o alvo %d",i+1);
+        }
+      } else {
+        LOGE("Sem Renderer para o alvo %d",i+1);
       }
     }
     if(dontDestroy){void* arg=disk;call1(a,dontDestroy,nullptr,arg);}
     ++created;
   }
-  LOGI("Alvos criados: %d/3",created);
+  LOGI("Alvos criados: %d/3; verificacao visual ainda necessaria",created);
 }
 } // namespace
 
@@ -229,6 +263,6 @@ MOD_EXTERN_FUNC void setup(CModInfo* output) noexcept {
   LOGI("setup: modulo visual v0.2.1 reconhecido");
 }
 MOD_EXTERN_FUNC void late_load() noexcept {
-  LOGI("late_load v0.2.1: tentando criar 3 alvos amarelos no Unity");
+  LOGI("late_load v0.2.2: alvos em metros, sem escala da mesa");
   createTargets();
 }

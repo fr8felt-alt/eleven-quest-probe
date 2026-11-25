@@ -1,21 +1,21 @@
-ELEVEN QUEST TARGETS v0.2.0 - TESTE VISUAL EXPERIMENTAL
+Eleven Quest Targets 0.2.2 — correção experimental de posição
 
-Esta eh uma tentativa inicial de criar 3 discos amarelos na mesa do Eleven no Quest 3.
-NAO foi compilada nem testada em Quest; compile com GitHub Actions.
+Arquivos para subir no repositório GitHub existente:
+- main.cpp (na raiz do repositório)
+- mod.json  (na raiz do repositório)
 
-Centros esperados: X=-0,46,0,+0,46 m; Z=+0,86 m; raio 9 cm.
-Procura o transform TableSurfaceSpace_forTargets; se nao estiver disponivel
-no momento do carregamento, usa posicoes de mundo aproximadas.
-Discos visuais nao devem alterar a fisica; colliders sao desativados.
+Não altere a pasta .github nem o CMakeLists.txt.
 
-AVISO: a Unity pode ainda nao ter carregado a cena real da mesa quando
-Scotland2 chama late_load. Nesse caso, os alvos podem aparecer deslocados
-ou nem aparecer, apesar de a biblioteca estar carregada. E um prototipo.
-Se o Eleven nao abrir, desabilite este mod no QuestPatcher.
-Nao instale no jogo online durante partidas.
+Problema investigado:
+- v0.2.1 criou 3/3 alvos mas não ficaram visíveis.
+- No PC, os offsets são em metros em um holder com escala 1.
+- A v0.2.1 usava TransformPoint sobre a superfície da mesa,
+  multiplicando os offsets pela escala (mesa 1,5258 x 2,7453 no PC).
+- v0.2.2 calcula mundo = position_da_superficie + rotation * offset_metros.
+- Inclui logs de posição mundial, renderer e material.
 
-COMO COMPILAR: subir o conteudo EXTRAIDO ao repositorio GitHub, mantendo
-.github/workflows/build.yml, depois Actions > Build Eleven Quest Targets.
-Baixar e extrair o artifact .zip para obter ElevenQuestTargets.qmod.
-Instalar pelo QuestPatcher em Mods > Browse, sem repatch.
-Preferivel desabilitar Eleven Quest Probe v0.1 para evitar confusao.
+Teste:
+- Remova o Targets 0.2.1 do QuestPatcher, depois instale o 0.2.2.
+- O jogo deve abrir e mostrar três discos amarelos na metade adversária.
+- Não é garantido: esta versão não foi executada em um Quest 3.
+- Se houver falha, desative/remova o mod; não repatche o aplicativo.
