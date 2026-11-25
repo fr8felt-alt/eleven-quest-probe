@@ -1,6 +1,6 @@
-// Eleven Table Tennis / Quest 3 - v0.3.1: 3 targets + 15s countdown + 30 launches
+// Eleven Table Tennis / Quest 3 - v0.3.2 experimental: opt-in Backhand 30 Bolas
 // Native Scotland2 mod: runs at late_load, when Unity IL2CPP has initialized.
-// Limits the built-in launcher to 30 attempts, after a 15-second start countdown.
+// Only limits launches when the BH30C0 preset is the sole active saved shot.
 // IL2CPP runtime_invoke: value-type params point to value storage (e.g. &Vec3),
  // reference-type params point directly to Il2CppObject (not &objPtr).
 #include <android/log.h>
@@ -12,11 +12,13 @@
 #include <string>
 #include <chrono>
 #include <algorithm>
+#include <fstream>
+#include <iterator>
 #include "dobby.h"
 #include "scotland2/shared/modloader.h"
 
 static constexpr const char* TAG = "ElevenTargets";
-static CModInfo info{"eleven-quest-targets", "0.3.1", 0};
+static CModInfo info{"eleven-quest-targets", "0.3.2", 0};
 #define MOD_EXTERN_FUNC extern "C" __attribute__((visibility("default")))
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -493,7 +495,7 @@ static void createTargets() {
 }
 
 // ============================================================================
-// v0.3: built-in launcher 15-second countdown and 30-shot limit.
+// v0.3.2: opt-in countdown and 30-shot limit for the Backhand 30 Bolas preset.
 // The *existing* ball launcher is responsible for ball speed, trajectory and
 // timing. We never manufacture ball physics or alter the established targets.
 // Hook functions must run on the Unity thread: no background Unity API calls.
@@ -501,6 +503,7 @@ static void createTargets() {
 static constexpr int kCountdownSeconds = 15;
 static constexpr int kSeriesLaunches = 30;
 enum class DrillState : uint8_t { Idle, Countdown, Running, Finished };
+enum class PresetSelection : uint8_t { Unavailable, Other, Backhand30 };
 using LauncherFn = void (*)(void* self, const void* methodInfo);
 using SteadyClock = std::chrono::steady_clock;
 
@@ -518,12 +521,104 @@ struct Drill {
   Segment segments[2][7]{};
   void* setActive{};
   bool displayReady{false};
+  PresetSelection selection{PresetSelection::Unavailable};
+  SteadyClock::time_point lastSelectionPoll{};
+  bool selectionLogged{false};
+  uint64_t updatesSeen{0};
+  uint64_t launchesSeen{0};
 } ;
 static Drill drill;
 static LauncherFn originalUpdate = nullptr;
 static LauncherFn originalLaunchBall = nullptr;
 static LauncherFn originalOnDisable = nullptr;
 static LauncherFn originalOnEnable = nullptr;
+
+
+// Optional test-only path override. Production uses the game's own Android files.
+// Never alter this JSON: it is owned and saved by the game's Ball Machine UI.
+static const char* settingsTestPath = nullptr;
+
+// Determine whether a JSON key's value is True (the game stores booleans as
+// strings). This operates on a bounded snippet, not on arbitrary Unity memory.
+static bool boolTrueAt(const std::string& json,size_t keyAt,size_t end) {
+  const auto colon=json.find(':',keyAt);
+  if(colon==std::string::npos||colon>=end) return false;
+  size_t j=colon+1;
+  while(j<end && (json[j]==' '||json[j]=='\t'||json[j]=='\n'||json[j]=='\r')) ++j;
+  if(j>=end) return false;
+  if(json[j]=='"') {
+    ++j;
+    return j+4<=end && json.compare(j,4,"True")==0 && j+4<end && json[j+4]=='"';
+  }
+  return j+4<=end && json.compare(j,4,"true")==0 &&
+         (j+4==end || json[j+4]==',' || json[j+4]=='}' || json[j+4]==' ');
+}
+
+static size_t objectEndAt(const std::string& json,size_t open) {
+  if(open>=json.size()||json[open]!='{') return std::string::npos;
+  int depth=0;bool quoted=false,escaped=false;
+  for(size_t i=open;i<json.size();++i){
+    char c=json[i];
+    if(quoted) {
+      if(escaped) escaped=false;
+      else if(c=='\\') escaped=true;
+      else if(c=='"') quoted=false;
+      continue;
+    }
+    if(c=='"'){quoted=true;continue;}
+    if(c=='{') ++depth;
+    if(c=='}' && --depth==0) return i+1;
+  }
+  return std::string::npos;
+}
+
+// Pure parser, covered by host tests. Safety rule: only control the machine
+// when exactly ONE preset is active and its stable ID is BH30C0.
+static PresetSelection selectionFromJson(const std::string& json) {
+  const auto id=json.find("\"BH30C0\"");
+  if(id==std::string::npos) return PresetSelection::Other;
+  const auto open=json.find('{',id+8);
+  if(open==std::string::npos) return PresetSelection::Other;
+  const auto end=objectEndAt(json,open);
+  if(end==std::string::npos) return PresetSelection::Other;
+  const auto activeKey=json.find("\"isActive\"",open);
+  if(activeKey==std::string::npos||activeKey>=end||!boolTrueAt(json,activeKey,end))
+    return PresetSelection::Other;
+  size_t nActive=0,pos=0;
+  while((pos=json.find("\"isActive\"",pos))!=std::string::npos) {
+    if(boolTrueAt(json,pos,json.size())) ++nActive;
+    pos+=10;
+  }
+  return nActive==1 ? PresetSelection::Backhand30 : PresetSelection::Other;
+}
+
+static PresetSelection readPresetFromFile(const char** usedPath) {
+  static const char* paths[]={
+    "/sdcard/Android/data/quest.eleven.forfunlabs/settings/BallLauncherSettings.json",
+    "/sdcard/Android/data/quest.eleven.forfunlabs/files/settings/BallLauncherSettings.json",
+    "/storage/emulated/0/Android/data/quest.eleven.forfunlabs/settings/BallLauncherSettings.json",
+    "/storage/emulated/0/Android/data/quest.eleven.forfunlabs/files/settings/BallLauncherSettings.json"
+  };
+  if(usedPath) *usedPath=nullptr;
+  for(size_t i=0;i<(settingsTestPath?1:4);++i){
+    const char* path=settingsTestPath?settingsTestPath:paths[i];
+    std::ifstream file(path,std::ios::binary);
+    if(!file) continue;
+    std::string json((std::istreambuf_iterator<char>(file)),std::istreambuf_iterator<char>());
+    if(usedPath) *usedPath=path;
+    if(json.empty() || json.size()>1024*1024) return PresetSelection::Unavailable;
+    return selectionFromJson(json);
+  }
+  return PresetSelection::Unavailable;
+}
+
+static const char* selectionName(PresetSelection s) {
+  switch(s){
+    case PresetSelection::Backhand30: return "Backhand 30 Bolas";
+    case PresetSelection::Other: return "outro exercicio";
+    default: return "JSON indisponivel";
+  }
+}
 
 // Segments: top, top-left, top-right, middle, bottom-left, bottom-right, bottom.
 // These are ordinary non-colliding Unity cubes: the geometry reliably worked
@@ -663,14 +758,45 @@ static void createCountdownDisplay() {
        count,drill.displayReady?"pronto":"parcial");
 }
 
+// Called only on the Unity thread. Polling at most once per second avoids
+// re-reading a configuration file for each rendered frame.
+static void refreshPreset(bool force=false) {
+  auto now=SteadyClock::now();
+  if(!force && drill.lastSelectionPoll!=SteadyClock::time_point{} &&
+     now-drill.lastSelectionPoll<std::chrono::seconds(1)) return;
+  drill.lastSelectionPoll=now;
+  const char* path=nullptr;
+  PresetSelection selected=readPresetFromFile(&path);
+  if(drill.selectionLogged && selected==drill.selection) return;
+  drill.selectionLogged=true;
+  LOGI("Treino v0.3.2: preset detectado: %s -> %s; arquivo=%s",
+       selectionName(drill.selection),selectionName(selected),
+       path?path:"NAO ENCONTRADO");
+  // Re-selection must start a fresh 15s countdown; do not affect the game
+  // when the preset is different or the file is unavailable.
+  drill.activeLauncher=nullptr;
+  drill.state=DrillState::Idle;
+  drill.launches=0;
+  drill.printedSecond=-2;
+  displayValue(-1);
+  drill.selection=selected;
+}
+
 static int countdownRemaining() {
   using seconds=std::chrono::duration<double>;
   const auto elapsed=std::chrono::duration_cast<seconds>(SteadyClock::now()-drill.startTime).count();
   return std::clamp(static_cast<int>(std::ceil(kCountdownSeconds-elapsed)),0,kCountdownSeconds);
 }
 static void hookedUpdate(void* self,const void* mi) {
+  // Required diagnostic: verifies that the hook is invoked during gameplay.
+  ++drill.updatesSeen;
+  if(drill.updatesSeen==1 || drill.updatesSeen%1800==0)
+    LOGI("Treino v0.3.2: hook Update executado, chamadas=%llu",
+         static_cast<unsigned long long>(drill.updatesSeen));
+  refreshPreset();
   if(originalUpdate) originalUpdate(self,mi);
-  if(self!=drill.activeLauncher || drill.state==DrillState::Idle) return;
+  if(drill.selection!=PresetSelection::Backhand30 ||
+     self!=drill.activeLauncher || drill.state==DrillState::Idle) return;
   if(drill.state==DrillState::Countdown){
     int left=countdownRemaining();
     displayValue(left);
@@ -685,7 +811,18 @@ static void hookedUpdate(void* self,const void* mi) {
   }
 }
 static void hookedLaunch(void* self,const void* mi) {
-  if(!originalLaunchBall){return;}
+  if(!originalLaunchBall) return;
+  ++drill.launchesSeen;
+  refreshPreset(true);
+  if(drill.launchesSeen<=5 || drill.launchesSeen%30==0)
+    LOGI("Treino v0.3.2: hook LaunchBall chamado %llu vezes; preset=%s",
+         static_cast<unsigned long long>(drill.launchesSeen),
+         selectionName(drill.selection));
+  // Never block balls in any other preset, including when the JSON is absent.
+  if(drill.selection!=PresetSelection::Backhand30) {
+    originalLaunchBall(self,mi);
+    return;
+  }
   if(drill.state==DrillState::Idle || drill.activeLauncher!=self){
     drill.activeLauncher=self;
     drill.launches=0;
@@ -722,10 +859,12 @@ static void resetSeries(void* self,const char* reason){
 }
 static void hookedOnDisable(void* self,const void* mi) {
   if(originalOnDisable) originalOnDisable(self,mi);
+  LOGI("Treino v0.3.2: BallLauncher.OnDisable recebido");
   resetSeries(self,"OnDisable");
 }
 static void hookedOnEnable(void* self,const void* mi) {
   if(originalOnEnable) originalOnEnable(self,mi);
+  LOGI("Treino v0.3.2: BallLauncher.OnEnable recebido");
   // Fallback when the component is reactivated without a preceding OnDisable.
   resetSeries(self,"OnEnable");
 }
@@ -790,19 +929,20 @@ static void installTraining() {
     hasResetHook=hasResetHook || (s==0 && originalOnEnable);
   }
   if(!hasResetHook){
-    LOGE("Treino v0.3: sem evento para reiniciar; pode ser necessario reiniciar a partida");
+    LOGE("Treino v0.3.2: sem evento de reset, escolha outro preset e volte para reiniciar");
   }
-  LOGI("Treino v0.3.1: 15 segundos e limite de 30 disparos ATIVOS; intervalo do jogo preservado");
+  LOGI("Treino v0.3.2: hooks prontos, limite de 30 SOMENTE se BH30C0 for o unico preset ativo salvo");
+  refreshPreset(true);
 }
 
 } // namespace
 
 MOD_EXTERN_FUNC void setup(CModInfo* output) noexcept {
   *output=info;
-  LOGI("setup: v0.3.1 tres alvos + 15s + 30 bolas");
+  LOGI("setup: v0.3.2 alvos preservados; preset BH30C0 com diagnostico");
 }
 MOD_EXTERN_FUNC void late_load() noexcept {
-  LOGI("late_load v0.3.1: mantendo alvos v0.2.6; iniciando integracao launcher");
+  LOGI("late_load v0.3.2: alvos v0.2.6 inalterados; procurando preset BH30C0");
   createTargets();
   installTraining();
 }

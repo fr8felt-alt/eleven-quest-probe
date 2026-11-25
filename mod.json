@@ -4,10 +4,10 @@
   "id": "eleven-quest-targets",
   "modloader": "Scotland2",
   "author": "Eleven Training Project",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "packageId": "quest.eleven.forfunlabs",
   "packageVersion": "0.436.37_2026.9.4.18.35.33.415",
-  "description": "3 alvos amarelos + visor de 15 s + 30 chamadas ao BallLauncher por serie; controle experimental com verificacoes de seguranca.",
+  "description": "v0.3.2 experimental: preserva 3 alvos; 15s + 30 disparos apenas quando o preset BH30C0 e o unico ativo em BallLauncherSettings.json; logs de diagnostico.",
   "dependencies": [],
   "modFiles": [
     "libeleven_quest_targets.so"
