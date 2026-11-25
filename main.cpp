@@ -1,4 +1,4 @@
-// Eleven Table Tennis / Quest 3 - v0.3.2 experimental: opt-in Backhand 30 Bolas
+// Eleven Table Tennis / Quest 3 - v0.3.3 experimental: visible digit display for Backhand 30 Bolas
 // Native Scotland2 mod: runs at late_load, when Unity IL2CPP has initialized.
 // Only limits launches when the BH30C0 preset is the sole active saved shot.
 // IL2CPP runtime_invoke: value-type params point to value storage (e.g. &Vec3),
@@ -18,7 +18,7 @@
 #include "scotland2/shared/modloader.h"
 
 static constexpr const char* TAG = "ElevenTargets";
-static CModInfo info{"eleven-quest-targets", "0.3.2", 0};
+static CModInfo info{"eleven-quest-targets", "0.3.3", 0};
 #define MOD_EXTERN_FUNC extern "C" __attribute__((visibility("default")))
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -509,6 +509,7 @@ using SteadyClock = std::chrono::steady_clock;
 
 struct Segment {
   void* gameObject{};
+  void* renderer{}; // Keep the object active; toggle MeshRenderer.enabled instead.
 };
 struct Drill {
   Api api{};
@@ -519,7 +520,8 @@ struct Drill {
   int shown{-2};
   int printedSecond{-2};
   Segment segments[2][7]{};
-  void* setActive{};
+  void* setActive{}; // Fallback only for unusual Unity builds.
+  void* setRendererEnabled{};
   bool displayReady{false};
   PresetSelection selection{PresetSelection::Unavailable};
   SteadyClock::time_point lastSelectionPoll{};
@@ -636,21 +638,33 @@ static constexpr bool sevenSegment[10][7] = {
  {1,1,1,1,0,1,1}  // 9
 };
 
+// Keep GameObjects alive and visible to the scene hierarchy. On Quest 3 the
+// original display was created successfully but no numbers were seen. Toggling
+// Renderer.enabled avoids repeated activation/deactivation of each object.
 static void displayValue(int value) {
-  if (!drill.displayReady || !drill.setActive || drill.shown == value) return;
-  drill.shown=value;
+  if (!drill.displayReady || (!drill.setRendererEnabled && !drill.setActive) ||
+      drill.shown == value) return;
+  int enabledCount=0;
+  int errors=0;
   for(int digit=0;digit<2;++digit){
     int d = (digit==0 ? value/10 : value%10);
     if(value<0) d=-1;
-    // Show a single digit during 0..9 countdown; two digits for 10..30.
+    // Single digit for 0..9; two digits for 10..30.
     if(digit==0 && value>=0 && value<10) d=-1;
     for(int seg=0;seg<7;++seg){
-      void* go=drill.segments[digit][seg].gameObject;
-      if (!go) continue;
+      const Segment& part=drill.segments[digit][seg];
       bool enabled = d>=0 && d<=9 && sevenSegment[d][seg];
-      write1(drill.api,drill.setActive,go,&enabled);
+      if(enabled) ++enabledCount;
+      const bool ok = (drill.setRendererEnabled && part.renderer)
+        ? write1(drill.api,drill.setRendererEnabled,part.renderer,&enabled)
+        : (drill.setActive && part.gameObject &&
+           write1(drill.api,drill.setActive,part.gameObject,&enabled));
+      if(!ok) ++errors;
     }
   }
+  if(errors==0) drill.shown=value;
+  LOGI("Treino v0.3.3: visor valor=%d segmentos_ligados=%d erros=%d modo=%s",
+       value,enabledCount,errors,drill.setRendererEnabled?"Renderer":"SetActive-fallback");
 }
 
 static void createCountdownDisplay() {
@@ -680,7 +694,8 @@ static void createCountdownDisplay() {
   auto setColor=a.method(materialClass,"set_color",1);
   auto destroy=a.method(objClass,"Destroy",1);
   drill.setActive=a.method(goClass,"SetActive",1);
-  if(!primitive||!getTransform||!setPosition||!setRotation||!setScale||!getComponent||!setEnabled||!getMaterial||!setColor||!drill.setActive){
+  drill.setRendererEnabled=a.method(rendererClass,"set_enabled",1);
+  if(!primitive||!getTransform||!setPosition||!setRotation||!setScale||!getComponent||!setEnabled||!getMaterial||!setColor||(!drill.setRendererEnabled&&!drill.setActive)){
     LOGE("Treino v0.3: metodos do visor faltando; treino sem numeros visuais");return;
   }
   auto surface=getTableSurface(a,goClass,objClass,trClass,componentClass);
@@ -706,15 +721,21 @@ static void createCountdownDisplay() {
   };
   void* colliderType=a.type_get_object(a.class_get_type(colliderClass));
   void* rendererType=a.type_get_object(a.class_get_type(rendererClass));
+  LOGI("Treino v0.3.3: visor usando %s",drill.setRendererEnabled?"Renderer.enabled":"SetActive-fallback");
   int count=0;
   for(int digit=0;digit<2;++digit){
     for(int seg=0;seg<7;++seg){
       int cube=3; // UnityEngine.PrimitiveType.Cube
       void* obj=call1(a,primitive,nullptr,&cube);
       if(!obj){LOGE("Treino v0.3: falha ao criar segmento %d/%d",digit,seg); continue;}
-      // Hide immediately, so incomplete objects never appear on the table.
+      // Keep the GameObject active so Unity can keep tracking its Renderer.
+      // Disable its Renderer immediately; avoid SetActive(false) on Quest.
       bool enabled=false;
-      if(!write1(a,drill.setActive,obj,&enabled)){
+      void* render=rendererType ? call1(a,getComponent,obj,rendererType) : nullptr;
+      if(!render || !(drill.setRendererEnabled
+             ? write1(a,drill.setRendererEnabled,render,&enabled)
+             : write1(a,drill.setActive,obj,&enabled))){
+        LOGE("Treino v0.3.3: nao consegui ocultar segmento inicial");
         if(destroy) call1(a,destroy,nullptr,obj);
         continue;
       }
@@ -728,7 +749,9 @@ static void createCountdownDisplay() {
       void* tr=a.call(getTransform,obj);
       if(!tr){if(destroy)call1(a,destroy,nullptr,obj);continue;}
       const auto& shape=shapes[seg];
-      Vec3 offset{(digit?0.10f:-0.10f)+shape.x,0.42f+shape.y,0.15f};
+      // Larger/clearer display, 60 cm over the net area (same calibrated
+      // SurfaceSpace anchor used by the targets; target coordinates unchanged).
+      Vec3 offset{(digit?0.10f:-0.10f)+shape.x,0.60f+shape.y,0.20f};
       Vec3 rot=rotateByQuaternion(q,offset);
       Vec3 pos{anchor.x+rot.x,anchor.y+rot.y,anchor.z+rot.z};
       Vec3 scale=shape.horizontal ? Vec3{0.12f,0.022f,0.012f}
@@ -736,8 +759,7 @@ static void createCountdownDisplay() {
       bool positioned=write1(a,setPosition,tr,&pos) &&
                       write1(a,setScale,tr,&scale) &&
                       (!setRotation || write1(a,setRotation,tr,&q));
-      auto r=rendererType ? call1(a,getComponent,obj,rendererType) : nullptr;
-      auto mat=r ? a.call(getMaterial,r) : nullptr;
+      auto mat=a.call(getMaterial,render);
       Color yellow{1.f,0.91f,0.09f,1.f};
       if(!positioned || !mat || !write1(a,setColor,mat,&yellow)){
         LOGE("Treino v0.3: segmento sem posicao/cor valida; descartando");
@@ -748,13 +770,13 @@ static void createCountdownDisplay() {
         bool keepWorld=true;void* args[]={surface.tableTransform,&keepWorld};
         a.call(setParent,tr,args);
       }
-      // Already hidden; visible only during an active launcher drill.
-      drill.segments[digit][seg].gameObject=obj;
+      // Renderer starts hidden; GameObject remains active in the scene.
+      drill.segments[digit][seg]={obj,render};
       ++count;
     }
   }
   drill.displayReady=(count==14);
-  LOGI("Treino v0.3: visor 7 segmentos criado: %d/14; %s",
+  LOGI("Treino v0.3.3: visor 7 segmentos criado: %d/14; %s",
        count,drill.displayReady?"pronto":"parcial");
 }
 
@@ -931,7 +953,7 @@ static void installTraining() {
   if(!hasResetHook){
     LOGE("Treino v0.3.2: sem evento de reset, escolha outro preset e volte para reiniciar");
   }
-  LOGI("Treino v0.3.2: hooks prontos, limite de 30 SOMENTE se BH30C0 for o unico preset ativo salvo");
+  LOGI("Treino v0.3.3: hooks prontos, limite de 30 SOMENTE se BH30C0 for o unico preset ativo salvo");
   refreshPreset(true);
 }
 
@@ -939,10 +961,10 @@ static void installTraining() {
 
 MOD_EXTERN_FUNC void setup(CModInfo* output) noexcept {
   *output=info;
-  LOGI("setup: v0.3.2 alvos preservados; preset BH30C0 com diagnostico");
+  LOGI("setup: v0.3.3 alvos preservados; visor corrigido com Renderer.enabled");
 }
 MOD_EXTERN_FUNC void late_load() noexcept {
-  LOGI("late_load v0.3.2: alvos v0.2.6 inalterados; procurando preset BH30C0");
+  LOGI("late_load v0.3.3: alvos v0.2.6 inalterados; visor Renderer.enabled");
   createTargets();
   installTraining();
 }
