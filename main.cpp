@@ -1,6 +1,8 @@
 // Eleven Table Tennis / Quest 3 - three visual training targets (experimental)
 // Native Scotland2 mod: runs at late_load, when Unity IL2CPP has initialized.
 // Does not interact with ball launcher, scoring, tracking, or physics.
+// IL2CPP runtime_invoke: value-type params point to value storage (e.g. &Vec3),
+ // reference-type params point directly to Il2CppObject (not &objPtr).
 #include <android/log.h>
 #include <dlfcn.h>
 #include <cstdint>
@@ -9,7 +11,7 @@
 #include "scotland2/shared/modloader.h"
 
 static constexpr const char* TAG = "ElevenTargets";
-static CModInfo info{"eleven-quest-targets", "0.2.0", 0};
+static CModInfo info{"eleven-quest-targets", "0.2.1", 0};
 #define MOD_EXTERN_FUNC extern "C" __attribute__((visibility("default")))
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -107,7 +109,9 @@ static void* getTableSurface(Api& api,void* goClass,void* objectClass) {
   auto getName=api.method(objectClass,"get_name",0);
   if (!getAll||!getName) return nullptr;
   void* goType=api.type_get_object(api.class_get_type(goClass));
-  auto arr=reinterpret_cast<Array*>(call1(api,getAll,nullptr,&goType));
+  LOGI("Procurando o objeto da superficie da mesa (Resources.FindObjectsOfTypeAll)...");
+  auto arr=reinterpret_cast<Array*>(call1(api,getAll,nullptr,goType));
+  LOGI("FindObjectsOfTypeAll retornou: %p", static_cast<void*>(arr));
   if (!arr || arr->max_length>100000) return nullptr;
   for (uintptr_t i=0;i<arr->max_length;++i) {
     void* go=arr->items[i]; if (!go) continue;
@@ -131,6 +135,7 @@ static void* getTableSurface(Api& api,void* goClass,void* objectClass) {
 static void createTargets() {
   Api a;
   if (!a.init()) return;
+  LOGI("API IL2CPP inicializada; procurando classes Unity...");
   auto gameObject=a.klass("UnityEngine.CoreModule.dll","UnityEngine","GameObject");
   auto transform=a.klass("UnityEngine.CoreModule.dll","UnityEngine","Transform");
   auto object=a.klass("UnityEngine.CoreModule.dll","UnityEngine","Object");
@@ -141,6 +146,7 @@ static void createTargets() {
   if (!gameObject||!transform||!object||!component||!renderer||!material) {
     LOGE("Classes basicas Unity nao disponiveis: alvos nao criados");return;
   }
+  LOGI("Classes Unity resolvidas. Buscando metodos...");
   auto createPrimitive=a.method(gameObject,"CreatePrimitive",1);
   auto getTransform=a.method(gameObject,"get_transform",0);
   auto setName=a.method(object,"set_name",1);
@@ -159,6 +165,7 @@ static void createTargets() {
      !getComponent||!collider||!setColliderEnabled||!renderer||!getMaterial||!setColor) {
     LOGE("Componentes de desenho ou seguranca do collider nao disponiveis");return;
   }
+  LOGI("Metodos Unity resolvidos. Procurando superficie...");
   void* surfaceGo=getTableSurface(a,gameObject,object);
   void* surfaceTransform=surfaceGo ? a.call(getTransform,surfaceGo) : nullptr;
   LOGI("TableSurfaceSpace_forTargets: %s", surfaceTransform?"encontrado":"nao encontrado; usando posicao aproximada");
@@ -171,21 +178,22 @@ static void createTargets() {
   constexpr const char* names[]={"Esquerda","Centro","Direita"};
   int created=0;
   for (int i=0;i<3;++i) {
+    LOGI("Criando alvo %d/3", i+1);
     int primitiveCylinder=2; // UnityEngine.PrimitiveType.Cylinder
     void* disk=call1(a,createPrimitive,nullptr,&primitiveCylinder);
     if(!disk){LOGE("CreatePrimitive falhou alvo %d",i);continue;}
     if(setName){
       auto n=std::string("Eleven_Alvo_Amarelo_")+names[i];
       void* name=a.str_new(n.c_str());
-      write1(a,setName,disk,&name);
+      write1(a,setName,disk,name);
     }
     // CreatePrimitive includes a physics collider. Disable it *before* placing it on the table.
     void* colliderType=a.type_get_object(a.class_get_type(collider));
-    auto hitbox=call1(a,getComponent,disk,&colliderType);
+    auto hitbox=call1(a,getComponent,disk,colliderType);
     bool disabled=false;
     if (!hitbox || !write1(a,setColliderEnabled,hitbox,&disabled)) {
       LOGE("Nao consegui desativar collider do alvo %d; descartando o objeto", i);
-      if(destroy){void* arg=disk;call1(a,destroy,nullptr,&arg);}
+      if(destroy){void* arg=disk;call1(a,destroy,nullptr,arg);}
       continue;
     }
     void* diskTransform=a.call(getTransform,disk);
@@ -203,13 +211,13 @@ static void createTargets() {
     if(surfaceTransform&&setRotation) write1(a,setRotation,diskTransform,&q);
     if(getComponent && renderer && getMaterial && setColor){
       void* type=a.type_get_object(a.class_get_type(renderer));
-      auto render=call1(a,getComponent,disk,&type);
+      auto render=call1(a,getComponent,disk,type);
       if(render){
         auto mat=a.call(getMaterial,render);
         if(mat){Color yellow{1.0f,0.83f,0.05f,1.0f};write1(a,setColor,mat,&yellow);}
       }
     }
-    if(dontDestroy){void* arg=disk;call1(a,dontDestroy,nullptr,&arg);}
+    if(dontDestroy){void* arg=disk;call1(a,dontDestroy,nullptr,arg);}
     ++created;
   }
   LOGI("Alvos criados: %d/3",created);
@@ -218,9 +226,9 @@ static void createTargets() {
 
 MOD_EXTERN_FUNC void setup(CModInfo* output) noexcept {
   *output=info;
-  LOGI("setup: modulo visual v0.2.0 reconhecido");
+  LOGI("setup: modulo visual v0.2.1 reconhecido");
 }
 MOD_EXTERN_FUNC void late_load() noexcept {
-  LOGI("late_load: tentando criar 3 alvos amarelos no Unity");
+  LOGI("late_load v0.2.1: tentando criar 3 alvos amarelos no Unity");
   createTargets();
 }
