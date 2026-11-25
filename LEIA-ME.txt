@@ -1,15 +1,19 @@
-Eleven Quest Targets v0.2.3 - ajuste experimental de altura
+Eleven Quest Targets v0.2.4 - ajuste lateral e vertical
 
-O usuario localizou os tres discos cerca de tres palmos abaixo do tampo da mesa.
-Esta versao conserva a logica de criacao que ja mostrou os tres objetos no Quest,
-e acrescenta 0.7586 metro ao deslocamento vertical dos discos.
+Motivo: casting da v0.2.3 mostra os alvos acima da mesa e deslocados para esquerda.
+Esta versao usa a mesma criacao de objetos que ja funciona; ajusta os offsets:
+  kRightShiftMeters = 0.40f (desloca para direita no eixo X local)
+  kTableTopOffsetY  = 0.36f (versao anterior era 0.7586f)
+Os dois valores sao ESTIMATIVAS baseadas no print; podem necessitar calibracao.
 
-Subir APENAS main.cpp e mod.json na raiz do repositorio existente no GitHub.
-Nao alterar CMakeLists.txt ou .github/workflows/build.yml.
-Aguardar o Actions ficar verde e baixar o ElevenQuestTargets.qmod.
-No QuestPatcher, desativar/remover Targets 0.2.2, instalar 0.2.3,
-abrir o Eleven e observar os alvos. Nao e necessario repatchar.
-Se os discos ficarem altos ou baixos, basta informar a diferenca aproximada.
+Adicionalmente, tenta anexar os discos ao objeto pai de
+TableSurfaceSpace_forTargets (normalmente GameTable), com worldPositionStays=true,
+para acompanha-los ao mover a mesa. Nao coloca discos como filhos do
+TableSurfaceSpace porque ele pode estar inativo.
 
-CUIDADO: Estimativa de altura com base no referencial de uma versao anterior
-(0.7586m). Ainda nao verificado no Quest 3; confirmar visualmente.
+Subir main.cpp e mod.json para a raiz do repositorio GitHub e substituir.
+CMakeLists.txt e workflow build.yml ficam inalterados.
+Compilar no Actions, baixar ElevenQuestTargets.qmod.
+Remover o Targets anterior no QuestPatcher, instalar a v0.2.4,
+conferir Enabled; nao repatchar nem reinstalar o Eleven.
+Se o jogo fechar, desativar o mod; se abrir mas desalinhado, enviar screenshot.

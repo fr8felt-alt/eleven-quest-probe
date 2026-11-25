@@ -11,7 +11,7 @@
 #include "scotland2/shared/modloader.h"
 
 static constexpr const char* TAG = "ElevenTargets";
-static CModInfo info{"eleven-quest-targets", "0.2.3", 0};
+static CModInfo info{"eleven-quest-targets", "0.2.4", 0};
 #define MOD_EXTERN_FUNC extern "C" __attribute__((visibility("default")))
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -170,6 +170,8 @@ static void createTargets() {
   auto getRotation=a.method(transform,"get_rotation",0);
   auto setRotation=a.method(transform,"set_rotation",1);
   auto getPosition=a.method(transform,"get_position",0);
+  auto getParent=a.method(transform,"get_parent",0);
+  auto setParent=a.method(transform,"SetParent",2);
   auto getComponent=a.method(gameObject,"GetComponent",1);
   auto getMaterial=a.method(renderer,"get_material",0);
   auto setColor=a.method(material,"set_color",1);
@@ -184,6 +186,11 @@ static void createTargets() {
   void* surfaceGo=getTableSurface(a,gameObject,object);
   void* surfaceTransform=surfaceGo ? a.call(getTransform,surfaceGo) : nullptr;
   LOGI("TableSurfaceSpace_forTargets: %s", surfaceTransform?"encontrado":"nao encontrado; usando posicao aproximada");
+  // Attach under GameTable, not under the potentially inactive TableSurfaceSpace.
+  // That way targets follow subsequent table movements/recentering.
+  void* tableParent=(surfaceTransform && getParent) ? a.call(getParent,surfaceTransform) : nullptr;
+  LOGI("Transform pai de TableSurfaceSpace: %p; SetParent: %s",
+       tableParent, setParent?"disponivel":"indisponivel");
   Quaternion q{0,0,0,1};
   Vec3 framePos{0.0f,0.7586f,0.0f};
   if (surfaceTransform) {
@@ -222,11 +229,13 @@ static void createTargets() {
     // IMPORTANT: coordinates are physical meters, not scaled local coordinates.
     // Unity's TransformPoint multiplies by table scale (1.5258 x 2.7453
     // on the PC prototype), putting the targets beyond the table.
-    // Visual finding from Quest 3: targets were roughly 3 palms below tabletop.
-    // SurfaceSpace origin appears near the floor while the top is about 0.7586 m up.
-    // Experimental tabletop elevation; calibrate from in-game observations.
-    constexpr float kTableTopOffsetY = 0.7586f;
-    Vec3 local{xs[i],kTableTopOffsetY + 0.008f,0.86f};
+    // Calibration based on casting screenshot: v0.2.3 (+0.7586 m) floats above
+    // tabletop, and the whole row appears left of the opponent-side center.
+    // Both values below are ESTIMATES; calibrate from another screenshot.
+    // Keep them explicit to make later iterations a two-number change.
+    constexpr float kRightShiftMeters = 0.40f;
+    constexpr float kTableTopOffsetY = 0.36f;
+    Vec3 local{xs[i] + kRightShiftMeters,kTableTopOffsetY + 0.008f,0.86f};
     const Vec3 rotated=rotateByQuaternion(q,local);
     Vec3 world{framePos.x+rotated.x,
                framePos.y+rotated.y,
@@ -255,7 +264,20 @@ static void createTargets() {
         LOGE("Sem Renderer para o alvo %d",i+1);
       }
     }
-    if(dontDestroy){void* arg=disk;call1(a,dontDestroy,nullptr,arg);}
+    // Follow the GameTable when the user repositions it in VR.
+    // worldPositionStays=true keeps the positions calibrated above.
+    bool parented=false;
+    if(tableParent && setParent){
+      bool keepWorld=true;
+      void* parentArgs[]={tableParent,&keepWorld};
+      void* ex=nullptr;
+      a.invoke(setParent,diskTransform,parentArgs,&ex);
+      parented=(ex==nullptr);
+      LOGI("Alvo %d: associado ao pai da mesa = %s", i+1,
+           parented?"sim":"nao");
+    }
+    // DontDestroyOnLoad only applies to root objects, not children.
+    if(!parented && dontDestroy){call1(a,dontDestroy,nullptr,disk);}
     ++created;
   }
   LOGI("Alvos criados: %d/3; verificacao visual ainda necessaria",created);
@@ -264,9 +286,9 @@ static void createTargets() {
 
 MOD_EXTERN_FUNC void setup(CModInfo* output) noexcept {
   *output=info;
-  LOGI("setup: modulo visual v0.2.3 reconhecido");
+  LOGI("setup: modulo visual v0.2.4 reconhecido");
 }
 MOD_EXTERN_FUNC void late_load() noexcept {
-  LOGI("late_load v0.2.3: altura da mesa acrescida de 0.7586m");
+  LOGI("late_load v0.2.4: x +0.40 m, y +0.36 m, segue GameTable");
   createTargets();
 }
