@@ -13,7 +13,7 @@
 #include "scotland2/shared/modloader.h"
 
 static constexpr const char* TAG = "ElevenTargets";
-static CModInfo info{"eleven-quest-targets", "0.2.5", 0};
+static CModInfo info{"eleven-quest-targets", "0.2.6", 0};
 #define MOD_EXTERN_FUNC extern "C" __attribute__((visibility("default")))
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -140,8 +140,34 @@ struct TableSurface {
   void* tableGameObject{};
 };
 
+// Name a Unity object in the log, keeping the candidate-chain inspectable.
+static std::string unityNameAscii(void* str) {
+  if (!str) return "<null>";
+  const auto* length=reinterpret_cast<const int32_t*>(
+       reinterpret_cast<const uint8_t*>(str)+sizeof(Obj));
+  if (*length<0 || *length>160) return "<invalid-name>";
+  const auto* chars=reinterpret_cast<const uint16_t*>(
+       reinterpret_cast<const uint8_t*>(str)+sizeof(Obj)+4);
+  std::string result; result.reserve(*length);
+  for (int i=0;i<*length;++i)
+    result.push_back(chars[i]>=32 && chars[i]<127 ? static_cast<char>(chars[i]) : '?');
+  return result;
+}
+static bool isGameTableName(const std::string& name) {
+  // Tolerate runtime clones, without confusing unrelated named objects.
+  return name=="GameTable" || name=="GameTable(Clone)" ||
+         name=="GameTable (Clone)";
+}
+static bool getWorldPosition(Api& api,void* tr,void* getPosition,Vec3& out) {
+  if (!tr || !getPosition) return false;
+  auto boxed=api.call(getPosition,tr);
+  if (!boxed) return false;
+  std::memcpy(&out,api.unbox(boxed),sizeof(out));
+  return std::isfinite(out.x) && std::isfinite(out.y) && std::isfinite(out.z);
+}
+
 static TableSurface getTableSurface(Api& api, void* goClass,void* objectClass,
-                                    void* transformClass,void* componentClass) {
+                                     void* transformClass,void* componentClass) {
   TableSurface result{};
   auto resources=api.klass("UnityEngine.CoreModule.dll","UnityEngine","Resources");
   auto getAll=api.method(resources,"FindObjectsOfTypeAll",1);
@@ -149,41 +175,97 @@ static TableSurface getTableSurface(Api& api, void* goClass,void* objectClass,
   auto getTransform=api.method(goClass,"get_transform",0);
   auto getParent=api.method(transformClass,"get_parent",0);
   auto getGameObject=api.method(componentClass,"get_gameObject",0);
+  auto getPosition=api.method(transformClass,"get_position",0);
   auto getActive=api.method(goClass,"get_activeInHierarchy",0);
-  if (!getAll||!getName||!getTransform||!getParent||!getGameObject) {
-    LOGE("Impossivel validar a hierarquia GameTable / TableSurfaceSpace_forTargets");
+  if (!getAll || !getName || !getTransform || !getParent || !getGameObject) {
+    LOGE("Nao foi possivel enumerar SurfaceSpace e hierarquia da mesa");
     return result;
   }
   void* goType=api.type_get_object(api.class_get_type(goClass));
-  LOGI("Buscando SurfaceSpace SOMENTE quando filho de GameTable ativo...");
   auto arr=reinterpret_cast<Array*>(call1(api,getAll,nullptr,goType));
-  if(!arr||arr->max_length>100000) return result;
-  int matches=0;
-  for(uintptr_t i=0;i<arr->max_length;++i){
-    void* candidate=arr->items[i];
-    if(!candidate || !unityStringEquals(api.call(getName,candidate),
-                                         "TableSurfaceSpace_forTargets")) continue;
-    ++matches;
-    void* surfaceTransform=api.call(getTransform,candidate);
-    void* parent=surfaceTransform ? api.call(getParent,surfaceTransform) : nullptr;
-    if(!parent || !unityStringEquals(api.call(getName,parent),"GameTable")) {
-      LOGI("Candidato %d rejeitado: pai nao eh GameTable",matches);
-      continue;
-    }
-    void* parentGo=api.call(getGameObject,parent);
-    if (!parentGo) continue;
-    if (getActive) {
-      void* activeBox=api.call(getActive,parentGo);
-      if (activeBox && !*reinterpret_cast<uint8_t*>(api.unbox(activeBox))){
-        LOGI("Candidato %d rejeitado: GameTable inativo",matches);
-        continue;
-      }
-    }
-    result={candidate,surfaceTransform,parent,parentGo};
-    LOGI("Referencia escolhida: SurfaceSpace filho de GameTable ATIVO, candidatos=%d",matches);
+  if (!arr || arr->max_length>100000) {
+    LOGE("Lista de GameObjects indisponivel/invalida");
     return result;
   }
-  LOGE("Nenhuma SurfaceSpace vinculada a GameTable ativo encontrada (%d candidatos)",matches);
+  LOGI("Enumerando SurfaceSpaces e ancestrais; nao exige GameTable como pai direto");
+  int matches=0;
+  // Use the original known-working reference when there is only one candidate.
+  for(uintptr_t i=0;i<arr->max_length;++i) {
+    void* candidate=arr->items[i];
+    if (!candidate || !unityStringEquals(api.call(getName,candidate),
+                                          "TableSurfaceSpace_forTargets")) continue;
+    ++matches;
+    void* surfaceTransform=api.call(getTransform,candidate);
+    if (!surfaceTransform) continue;
+    TableSurface current{candidate,surfaceTransform,nullptr,nullptr};
+    void* tr=api.call(getParent,surfaceTransform);
+    if (tr) current.tableTransform=tr; // Fallback: nearest parent follows VR table movement.
+    std::string path;
+    for(int depth=1;tr && depth<=16;++depth) {
+      std::string n=unityNameAscii(api.call(getName,tr));
+      if (!path.empty()) path += " < ";
+      path += n;
+      if (isGameTableName(n)) {
+        void* parentGo=api.call(getGameObject,tr);
+        bool active=true;
+        if (getActive && parentGo) {
+          void* box=api.call(getActive,parentGo);
+          if (box) active=(*reinterpret_cast<uint8_t*>(api.unbox(box)) != 0);
+        }
+        LOGI("Candidato %d: GameTable ancestral no nivel %d; ativo=%s",
+             matches,depth,active?"sim":"nao");
+        if (active && parentGo) {
+          current.tableTransform=tr;
+          current.tableGameObject=parentGo;
+          LOGI("Candidato %d: cadeia=%s",matches,path.c_str());
+          return current;
+        }
+      }
+      tr=api.call(getParent,tr);
+    }
+    LOGI("Candidato %d: cadeia de pais=%s",matches,path.c_str());
+    if (!result.transform) result=current;
+  }
+  if (!result.transform) {
+    LOGE("TableSurfaceSpace_forTargets nao encontrada");
+    return result;
+  }
+  LOGI("SurfaceSpace encontrada (%d candidatos), sem GameTable ancestral confirmado",matches);
+
+  // In the Quest scene the table can have its own transform hierarchy.
+  // Try to find a nearby *active* GameTable by name; never make it mandatory.
+  Vec3 surfacePos{};
+  bool haveSurfacePos=getWorldPosition(api,result.transform,getPosition,surfacePos);
+  float bestDist2=1.0e20f;
+  int tables=0;
+  for(uintptr_t i=0;i<arr->max_length;++i) {
+    void* candidate=arr->items[i]; if (!candidate) continue;
+    auto name=unityNameAscii(api.call(getName,candidate));
+    if (!isGameTableName(name)) continue;
+    ++tables;
+    void* tr=api.call(getTransform,candidate);
+    Vec3 p{};
+    if (!getWorldPosition(api,tr,getPosition,p) || !haveSurfacePos) continue;
+    bool active=true;
+    if (getActive) {
+      auto box=api.call(getActive,candidate);
+      if (box) active=(*reinterpret_cast<uint8_t*>(api.unbox(box)) != 0);
+    }
+    float dx=p.x-surfacePos.x,dy=p.y-surfacePos.y,dz=p.z-surfacePos.z;
+    float dist2=dx*dx+dy*dy+dz*dz;
+    LOGI("GameTable avulsa: dist=%.3f m, ativo=%s",
+          std::sqrt(dist2),active?"sim":"nao");
+    if (active && dist2<bestDist2 && dist2<16.0f) {
+      bestDist2=dist2;
+      result.tableGameObject=candidate;
+      result.tableTransform=tr;
+    }
+  }
+  if (result.tableGameObject)
+    LOGI("Usando GameTable ativa proxima da SurfaceSpace (dist=%.3f m)",
+         std::sqrt(bestDist2));
+  else
+    LOGI("Sem GameTable proxima (%d candidatas); manter SurfaceSpace original sem bloquear criacao",tables);
   return result;
 }
 
@@ -305,8 +387,8 @@ static void createTargets() {
   }
   LOGI("Metodos Unity resolvidos. Procurando superficie...");
   TableSurface surface=getTableSurface(a,gameObject,object,transform,component);
-  if(!surface.transform || !surface.tableTransform){
-    LOGE("Cancelando: sem GameTable ativo, nao vamos criar alvos no espaco errado");
+  if(!surface.transform){
+    LOGE("Cancelando: SurfaceSpace nao encontrada");
     return;
   }
   void* surfaceTransform=surface.transform;
@@ -410,9 +492,9 @@ static void createTargets() {
 
 MOD_EXTERN_FUNC void setup(CModInfo* output) noexcept {
   *output=info;
-  LOGI("setup: modulo visual v0.2.5 reconhecido");
+  LOGI("setup: modulo visual v0.2.6 reconhecido");
 }
 MOD_EXTERN_FUNC void late_load() noexcept {
-  LOGI("late_load v0.2.5: referencia GameTable validada, altura pelo tampo, sem offsets arbitrarios");
+  LOGI("late_load v0.2.6: SurfaceSpace sem filtro de pai direto; cadeia e GameTable registradas");
   createTargets();
 }

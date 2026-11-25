@@ -1,17 +1,29 @@
-ELEVEN QUEST TARGETS v0.2.5 - referencia real da mesa
+ELEVEN QUEST TARGETS v0.2.6 — correção do filtro GameTable
 
-Mudancas justificadas pela comparacao das versoes e pelo mod PC:
-1. Seleciona TableSurfaceSpace_forTargets APENAS se filho direto de GameTable ativo.
-2. Procura Renderer.bounds dos elementos planos e largos de GameTable para obter a altura real do tampo e seu centro horizontal.
-3. Usa posicoes do mod PC (X=-0.46,0,+0.46; Z=+0.86) sem deslocamentos inventados em X ou Y.
-4. Define GameTable como pai com worldPositionStays=true, para acompanhar o reposicionamento da mesa.
-5. Se nao identificar os renderizadores do tampo, recua para a origem do SurfaceSpace usada no PC; registra explicitamente no Logcat.
+MOTIVO CONFIRMADO PELO LOGCAT v0.2.5:
+  Candidato 1 rejeitado: pai nao eh GameTable
+  Cancelando: sem GameTable ativo
+Portanto os alvos na v0.2.5 nem eram criados.
+
+ALTERACOES:
+1. Usa o objeto TableSurfaceSpace_forTargets identificado nas versões funcionais.
+2. Procura GameTable em até 16 ancestrais (não apenas no pai direto).
+3. Se não encontrar ancestral, procura GameTable ativa próxima no espaço 3D.
+4. Não cancela a criação apenas por falta de GameTable; nesse caso preserva
+   o referencial que gerou três alvos nas versões v0.2.1–v0.2.4.
+5. Registra a cadeia de ancestrais e o resultado dos Renderer.bounds.
+6. Mantém as posições físicas do mod PC (-0.46,0,+0.46 e z=0.86 m).
+
+IMPORTANTE:
+A posição de fallback ainda pode ficar abaixo da mesa: esta versão corrige
+primeiro a regressão que impedia criar objetos e gera informação objetiva para
+calibração. Não promete alinhamento perfeito sem informações da cena.
 
 COMO ATUALIZAR:
-- Substituir main.cpp e mod.json na raiz do repositorio GitHub anterior.
-- Nao e necessario alterar CMakeLists.txt nem .github/workflows/build.yml.
-- Compilar com Actions, remover a v0.2.4 antiga e importar ElevenQuestTargets.qmod novo pelo QuestPatcher.
-- Nao aplicar Repatch App. O Scotland2 ja esta funcionando.
-
-A validacao real requer abrir o jogo: a compilacao confirma apenas a consistencia do codigo, nao o posicionamento de objetos do Unity.
-Se o alinhamento ainda estiver impreciso, as linhas do Logcat com tag ElevenTargets mostram a ancora, a altura detectada e os candidatos da malha.
+- No GitHub, substituir main.cpp e mod.json na raiz do repositorio.
+- Commit changes; Actions verde; baixar o QMOD compilado.
+- No QuestPatcher, remover a v0.2.5, instalar a v0.2.6 e ativar.
+- Não aplicar outro patch no jogo; manter Scotland2.
+- Se os alvos aparecerem mas ficarem fora da mesa, coletar as linhas com
+  ElevenTargets no Logcat, especialmente cadeia, GameTable, Tampo candidato,
+  Ancora final e Alvo 1/2/3.

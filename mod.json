@@ -4,10 +4,10 @@
   "id": "eleven-quest-targets",
   "modloader": "Scotland2",
   "author": "Eleven Training Project",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "packageId": "quest.eleven.forfunlabs",
   "packageVersion": "0.436.37_2026.9.4.18.35.33.415",
-  "description": "Posicionamento fisico dos 3 alvos: GameTable ativo, bounds do tampo quando disponiveis, zero ajustes arbitrarios; alvos acompanham a mesa.",
+  "description": "Aceita SurfaceSpace mesmo sem GameTable como pai direto; procura ancestrais e GameTable proxima, registra geometria e posicoes; sem offsets arbitrarios.",
   "dependencies": [],
   "modFiles": [
     "libeleven_quest_targets.so"
