@@ -1,4 +1,4 @@
-// Eleven Table Tennis / Quest 3 - v0.3.3 experimental: visible digit display for Backhand 30 Bolas
+// Eleven Table Tennis / Quest 3 - v0.3.4 experimental: camera-attached HUD for Backhand 30 Bolas
 // Native Scotland2 mod: runs at late_load, when Unity IL2CPP has initialized.
 // Only limits launches when the BH30C0 preset is the sole active saved shot.
 // IL2CPP runtime_invoke: value-type params point to value storage (e.g. &Vec3),
@@ -18,7 +18,7 @@
 #include "scotland2/shared/modloader.h"
 
 static constexpr const char* TAG = "ElevenTargets";
-static CModInfo info{"eleven-quest-targets", "0.3.3", 0};
+static CModInfo info{"eleven-quest-targets", "0.3.4", 0};
 #define MOD_EXTERN_FUNC extern "C" __attribute__((visibility("default")))
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -528,6 +528,19 @@ struct Drill {
   bool selectionLogged{false};
   uint64_t updatesSeen{0};
   uint64_t launchesSeen{0};
+  // Camera-relative HUD: avoid depending on the table's world-space view.
+  void* cameraMainMethod{};
+  void* cameraListMethod{};
+  void* cameraStereoMethod{};
+  void* cameraGetTransform{};
+  void* hudObjectGetTransform{};
+  void* hudSetParent{};
+  void* hudSetLocalPosition{};
+  void* hudSetLocalRotation{};
+  void* hudSetLocalScale{};
+  SteadyClock::time_point lastHudAttempt{};
+  uint32_t hudAttempts{0};
+  bool hudBound{false};
 } ;
 static Drill drill;
 static LauncherFn originalUpdate = nullptr;
@@ -663,8 +676,9 @@ static void displayValue(int value) {
     }
   }
   if(errors==0) drill.shown=value;
-  LOGI("Treino v0.3.3: visor valor=%d segmentos_ligados=%d erros=%d modo=%s",
-       value,enabledCount,errors,drill.setRendererEnabled?"Renderer":"SetActive-fallback");
+  LOGI("Treino v0.3.4: visor valor=%d segmentos_ligados=%d erros=%d modo=%s hud=%s",
+       value,enabledCount,errors,drill.setRendererEnabled?"Renderer":"SetActive-fallback",
+       drill.hudBound?"camera":"mesa");
 }
 
 static void createCountdownDisplay() {
@@ -677,6 +691,12 @@ static void createCountdownDisplay() {
   auto rendererClass=a.klass("UnityEngine.CoreModule.dll","UnityEngine","Renderer");
   auto materialClass=a.klass("UnityEngine.CoreModule.dll","UnityEngine","Material");
   auto colliderClass=a.klass("UnityEngine.PhysicsModule.dll","UnityEngine","Collider");
+  auto cameraClass=a.klass("UnityEngine.CoreModule.dll","UnityEngine","Camera");
+  // Camera can be initialized after late_load; binding retries from Update.
+  drill.cameraMainMethod=a.method(cameraClass,"get_main",0);
+  drill.cameraListMethod=a.method(cameraClass,"get_allCameras",0);
+  drill.cameraStereoMethod=a.method(cameraClass,"get_stereoEnabled",0);
+  drill.cameraGetTransform=a.method(componentClass,"get_transform",0);
   if(!goClass||!trClass||!objClass||!componentClass||!rendererClass||!materialClass||!colliderClass){
     LOGE("Treino v0.3: classes de visor nao encontradas");return;
   }
@@ -687,6 +707,11 @@ static void createCountdownDisplay() {
   auto setScale=a.method(trClass,"set_localScale",1);
   auto setParent=a.method(trClass,"SetParent",2);
   auto getPosition=a.method(trClass,"get_position",0);
+  drill.hudObjectGetTransform=getTransform;
+  drill.hudSetParent=setParent;
+  drill.hudSetLocalPosition=a.method(trClass,"set_localPosition",1);
+  drill.hudSetLocalRotation=a.method(trClass,"set_localRotation",1);
+  drill.hudSetLocalScale=setScale;
   auto getRotation=a.method(trClass,"get_rotation",0);
   auto getComponent=a.method(goClass,"GetComponent",1);
   auto setEnabled=a.method(colliderClass,"set_enabled",1);
@@ -780,6 +805,98 @@ static void createCountdownDisplay() {
        count,drill.displayReady?"pronto":"parcial");
 }
 
+// Try a headset-relative HUD. This deliberately uses the same 14 cubes and
+// seven-segment logic; only their parent/position differs from the table HUD.
+// Camera.main is not guaranteed in every VR scene. Prefer a stereo camera from
+// Camera.allCameras if available; fall back to Camera.main/first enabled camera.
+// All Unity API calls are made from the BallLauncher Update hook (Unity thread).
+static bool stereoCamera(Api& a,void* camera) {
+  if(!camera || !drill.cameraStereoMethod) return false;
+  void* boxed=a.call(drill.cameraStereoMethod,camera);
+  return boxed && *static_cast<const uint8_t*>(a.unbox(boxed))!=0;
+}
+static void* chooseDisplayCamera(Api& a) {
+  void* mainCam=drill.cameraMainMethod ? a.call(drill.cameraMainMethod,nullptr) : nullptr;
+  void* firstCam=nullptr;
+  if(drill.cameraListMethod) {
+    auto* all=static_cast<Array*>(a.call(drill.cameraListMethod,nullptr));
+    if(all && all->max_length>0 && all->max_length<32) {
+      for(uintptr_t i=0;i<all->max_length;++i) {
+        void* camera=all->items[i];
+        if(!camera) continue;
+        if(!firstCam) firstCam=camera;
+        if(stereoCamera(a,camera)) return camera;
+      }
+    }
+  }
+  return mainCam ? mainCam : firstCam;
+}
+static void attachDisplayToCamera() {
+  if(!drill.displayReady || drill.hudBound) return;
+  auto now=SteadyClock::now();
+  if(drill.lastHudAttempt!=SteadyClock::time_point{} &&
+      now-drill.lastHudAttempt<std::chrono::seconds(1)) return;
+  drill.lastHudAttempt=now;
+  ++drill.hudAttempts;
+  auto& a=drill.api;
+  if(!drill.cameraGetTransform || !drill.hudObjectGetTransform ||
+     !drill.hudSetParent || !drill.hudSetLocalPosition ||
+     !drill.hudSetLocalRotation || !drill.hudSetLocalScale) {
+    if(drill.hudAttempts==1) LOGE("Treino v0.3.4: camera/HUD sem metodos IL2CPP; visor antigo mantido");
+    return;
+  }
+  void* camera=chooseDisplayCamera(a);
+  void* cameraTr=camera ? a.call(drill.cameraGetTransform,camera) : nullptr;
+  if(!cameraTr) {
+    if(drill.hudAttempts==1 || drill.hudAttempts%10==0)
+      LOGI("Treino v0.3.4: aguardando camera VR (tentativas=%u)",drill.hudAttempts);
+    return;
+  }
+  struct Shape{float x,y;bool horizontal;};
+  static constexpr Shape shapes[7]={
+      {0.00f,0.12f,true}, {-0.065f,0.063f,false},
+      {0.065f,0.063f,false}, {0.00f,0.00f,true},
+      {-0.065f,-0.063f,false}, {0.065f,-0.063f,false},
+      {0.00f,-0.12f,true}
+  };
+  // At ~1.4 m ahead and slightly above/right of the player's view.
+  // Camera-local coordinates follow headset motion, so the visor remains legible.
+  const Quaternion identity{0.f,0.f,0.f,1.f};
+  int positioned=0;
+  for(int digit=0;digit<2;++digit) {
+    for(int seg=0;seg<7;++seg) {
+      void* obj=drill.segments[digit][seg].gameObject;
+      void* tr=obj ? a.call(drill.hudObjectGetTransform,obj) : nullptr;
+      if(!tr) continue;
+      // worldPositionStays=false so all following transforms are camera-relative.
+      bool keepWorld=false;
+      void* args[]={cameraTr,&keepWorld};
+      void* ex=nullptr;
+      a.invoke(drill.hudSetParent,tr,args,&ex);
+      if(ex) {LOGE("Treino v0.3.4: falha ao vincular segmento na camera");continue;}
+      const auto& shape=shapes[seg];
+      Vec3 local{(digit?0.42f:0.22f)+shape.x,0.18f+shape.y,1.40f};
+      Vec3 scale=shape.horizontal ? Vec3{0.12f,0.022f,0.012f}
+                                  : Vec3{0.022f,0.108f,0.012f};
+      if(write1(a,drill.hudSetLocalPosition,tr,&local) &&
+         write1(a,drill.hudSetLocalRotation,tr,(void*)&identity) &&
+         write1(a,drill.hudSetLocalScale,tr,&scale)) ++positioned;
+    }
+  }
+  drill.hudBound=(positioned==14);
+  LOGI("Treino v0.3.4: HUD camera=%s estereo=%s segmentos=%d/14",
+       camera== (drill.cameraMainMethod ? a.call(drill.cameraMainMethod,nullptr) : nullptr)
+          ?"principal":"alternativa",
+       stereoCamera(a,camera)?"sim":"nao",positioned);
+  if(!drill.hudBound) LOGE("Treino v0.3.4: HUD parcial, precisa verificar geometria");
+  // Reapply number since rendering parent/positions have changed.
+  drill.shown=-2;
+  if(drill.state==DrillState::Countdown) displayValue(kCountdownSeconds);
+  else if(drill.state==DrillState::Running || drill.state==DrillState::Finished)
+    displayValue(kSeriesLaunches-drill.launches);
+  else displayValue(-1);
+}
+
 // Called only on the Unity thread. Polling at most once per second avoids
 // re-reading a configuration file for each rendered frame.
 static void refreshPreset(bool force=false) {
@@ -817,6 +934,8 @@ static void hookedUpdate(void* self,const void* mi) {
          static_cast<unsigned long long>(drill.updatesSeen));
   refreshPreset();
   if(originalUpdate) originalUpdate(self,mi);
+  // Retry until the headset's rendering camera is available.
+  attachDisplayToCamera();
   if(drill.selection!=PresetSelection::Backhand30 ||
      self!=drill.activeLauncher || drill.state==DrillState::Idle) return;
   if(drill.state==DrillState::Countdown){
@@ -953,7 +1072,7 @@ static void installTraining() {
   if(!hasResetHook){
     LOGE("Treino v0.3.2: sem evento de reset, escolha outro preset e volte para reiniciar");
   }
-  LOGI("Treino v0.3.3: hooks prontos, limite de 30 SOMENTE se BH30C0 for o unico preset ativo salvo");
+  LOGI("Treino v0.3.4: hooks prontos, limite de 30 somente no BH30C0; HUD camera VR");
   refreshPreset(true);
 }
 
@@ -961,10 +1080,10 @@ static void installTraining() {
 
 MOD_EXTERN_FUNC void setup(CModInfo* output) noexcept {
   *output=info;
-  LOGI("setup: v0.3.3 alvos preservados; visor corrigido com Renderer.enabled");
+  LOGI("setup: v0.3.4 alvos preservados; HUD segue camera VR");
 }
 MOD_EXTERN_FUNC void late_load() noexcept {
-  LOGI("late_load v0.3.3: alvos v0.2.6 inalterados; visor Renderer.enabled");
+  LOGI("late_load v0.3.4: alvos v0.2.6 inalterados; HUD VR ligado no Update");
   createTargets();
   installTraining();
 }

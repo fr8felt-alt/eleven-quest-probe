@@ -4,10 +4,10 @@
   "id": "eleven-quest-targets",
   "modloader": "Scotland2",
   "author": "Eleven Training Project",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "packageId": "quest.eleven.forfunlabs",
   "packageVersion": "0.436.37_2026.9.4.18.35.33.415",
-  "description": "v0.3.3 experimental: visor da contagem regressiva e das 30 bolas usa Renderer.enabled; alvos e limite de 30 preservados.",
+  "description": "v0.3.4 experimental: HUD de 15 segundos e 30 bolas anexado a camera XR (quando disponivel); tres alvos e controle do lancador inalterados.",
   "dependencies": [],
   "modFiles": [
     "libeleven_quest_targets.so"
